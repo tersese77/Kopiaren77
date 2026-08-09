@@ -1,0 +1,476 @@
+name: Docker Windows RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+
+    permissions:
+      contents: read
+
+    steps:
+
+      # =========================================================
+      # 1. CHECK DOCKER
+      # =========================================================
+      - name: Check Docker
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo " CHECKING DOCKER"
+          echo "======================================"
+
+          docker version
+          docker info
+
+      # =========================================================
+      # 2. CHECK + FIX KVM PERMISSION
+      # =========================================================
+      - name: Check KVM
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo " CHECKING KVM"
+          echo "======================================"
+
+          if [ ! -e /dev/kvm ]; then
+            echo ""
+            echo "ERROR: /dev/kvm tidak tersedia."
+            echo ""
+            echo "Runner ini tidak menyediakan device KVM."
+            exit 1
+          fi
+
+          echo ""
+          echo "KVM sebelum perbaikan:"
+          ls -l /dev/kvm
+
+          echo ""
+          echo "Memperbaiki permission KVM..."
+
+          sudo chmod 666 /dev/kvm
+
+          echo ""
+          echo "KVM setelah perbaikan:"
+          ls -l /dev/kvm
+
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo ""
+            echo "KVM ACCESS: OK"
+          else
+            echo ""
+            echo "ERROR: Tidak bisa membaca/menulis /dev/kvm."
+            exit 1
+          fi
+
+          echo ""
+          echo "KVM CHECK BERHASIL."
+
+      # =========================================================
+      # 3. CHECK TUN
+      # =========================================================
+      - name: Check TUN
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo " CHECKING TUN"
+          echo "======================================"
+
+          if [ ! -e /dev/net/tun ]; then
+            echo ""
+            echo "ERROR: /dev/net/tun tidak tersedia."
+            exit 1
+          fi
+
+          ls -l /dev/net/tun
+
+          echo ""
+          echo "TUN DEVICE: OK"
+
+      # =========================================================
+      # 4. GENERATE RANDOM RDP PASSWORD
+      # =========================================================
+      - name: Generate RDP Credentials
+        shell: bash
+        run: |
+          set -e
+
+          USERNAME="Docker"
+
+          PASSWORD=$(python3 - <<'PY'
+          import secrets
+          import string
+
+          chars = string.ascii_letters + string.digits + "!@#$%"
+
+          while True:
+              password = ''.join(
+                  secrets.choice(chars)
+                  for _ in range(18)
+              )
+
+              if (
+                  any(c.isupper() for c in password)
+                  and any(c.islower() for c in password)
+                  and any(c.isdigit() for c in password)
+                  and any(c in "!@#$%" for c in password)
+              ):
+                  print(password)
+                  break
+          PY
+          )
+
+          echo "RDP_USERNAME=$USERNAME" >> "$GITHUB_ENV"
+          echo "RDP_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+
+          echo "RDP credentials generated."
+
+      # =========================================================
+      # 5. CREATE DOCKER COMPOSE
+      # =========================================================
+      - name: Create Docker Compose
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p windows
+
+          cat > compose.yml <<EOF
+          services:
+
+            windows:
+              image: dockurr/windows:latest
+
+              container_name: windows
+
+              environment:
+                VERSION: "11"
+                RAM_SIZE: "4G"
+                CPU_CORES: "2"
+                DISK_SIZE: "64G"
+
+                USERNAME: "${RDP_USERNAME}"
+                PASSWORD: "${RDP_PASSWORD}"
+
+              devices:
+                - /dev/kvm
+                - /dev/net/tun
+
+              cap_add:
+                - NET_ADMIN
+
+              ports:
+                - "8006:8006"
+                - "3389:3389/tcp"
+                - "3389:3389/udp"
+
+              volumes:
+                - ./windows:/storage
+
+              restart: always
+
+              stop_grace_period: 2m
+          EOF
+
+          echo "======================================"
+          echo " DOCKER COMPOSE"
+          echo "======================================"
+
+          cat compose.yml
+
+      # =========================================================
+      # 6. PULL WINDOWS IMAGE
+      # =========================================================
+      - name: Pull Windows Docker Image
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo " PULLING WINDOWS IMAGE"
+          echo "======================================"
+
+          docker compose pull
+
+      # =========================================================
+      # 7. START WINDOWS
+      # =========================================================
+      - name: Start Windows Docker
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo " STARTING WINDOWS DOCKER"
+          echo "======================================"
+
+          docker compose up -d
+
+          echo ""
+          echo "======================================"
+          echo " CONTAINER STATUS"
+          echo "======================================"
+
+          docker ps -a
+
+      # =========================================================
+      # 8. SHOW INITIAL WINDOWS LOG
+      # =========================================================
+      - name: Show Windows Startup Log
+        shell: bash
+        run: |
+          echo "======================================"
+          echo " WINDOWS STARTUP LOG"
+          echo "======================================"
+
+          docker logs --tail 100 windows || true
+
+      # =========================================================
+      # 9. CONNECT TAILSCALE
+      # =========================================================
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+          version: latest
+
+      # =========================================================
+      # 10. GET TAILSCALE IP
+      # =========================================================
+      - name: Get Tailscale IP
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo " TAILSCALE"
+          echo "======================================"
+
+          tailscale status
+
+          IP=$(tailscale ip -4 | head -n 1)
+
+          if [ -z "$IP" ]; then
+            echo ""
+            echo "ERROR: Tailscale IPv4 tidak ditemukan."
+            exit 1
+          fi
+
+          echo "TAILSCALE_IP=$IP" >> "$GITHUB_ENV"
+
+          echo ""
+          echo "TAILSCALE IPv4:"
+          echo "$IP"
+
+      # =========================================================
+      # 11. WAIT FOR WINDOWS + RDP
+      # =========================================================
+      - name: Wait For Windows
+        shell: bash
+        run: |
+          echo "======================================"
+          echo " WAITING FOR WINDOWS + RDP"
+          echo "======================================"
+
+          READY=0
+
+          for i in {1..120}; do
+
+            echo ""
+            echo "--------------------------------------"
+            echo "Check $i/120"
+            echo "Time: $(date)"
+            echo "--------------------------------------"
+
+            # Container check
+            if docker ps --format '{{.Names}}' | grep -q '^windows$'; then
+              echo "Windows container: RUNNING"
+            else
+              echo "Windows container: STOPPED"
+
+              echo "Restarting container..."
+
+              docker compose up -d
+            fi
+
+            # RDP port check
+            if nc -z 127.0.0.1 3389 2>/dev/null; then
+
+              echo ""
+              echo "======================================"
+              echo " RDP PORT 3389 IS READY"
+              echo "======================================"
+
+              READY=1
+              break
+
+            else
+
+              echo "RDP 3389: NOT READY"
+
+            fi
+
+            sleep 10
+
+          done
+
+          if [ "$READY" -ne 1 ]; then
+
+            echo ""
+            echo "======================================"
+            echo " WINDOWS/RDP FAILED TO START"
+            echo "======================================"
+
+            echo ""
+            echo "===== DOCKER STATUS ====="
+
+            docker ps -a
+
+            echo ""
+            echo "===== WINDOWS LOG ====="
+
+            docker logs --tail 300 windows || true
+
+            exit 1
+          fi
+
+      # =========================================================
+      # 12. TEST RDP
+      # =========================================================
+      - name: Test RDP
+        shell: bash
+        run: |
+          set -e
+
+          echo "======================================"
+          echo " TESTING RDP"
+          echo "======================================"
+
+          if nc -zv 127.0.0.1 3389; then
+
+            echo ""
+            echo "RDP TCP 3389: OK"
+
+          else
+
+            echo ""
+            echo "RDP TCP 3389: FAILED"
+
+            exit 1
+
+          fi
+
+      # =========================================================
+      # 13. SHOW CONNECTION
+      # =========================================================
+      - name: Show RDP Connection
+        shell: bash
+        run: |
+          echo ""
+          echo "=============================================="
+          echo "       WINDOWS DOCKER RDP READY"
+          echo "=============================================="
+          echo ""
+          echo "RDP IP       : $TAILSCALE_IP"
+          echo "RDP PORT     : 3389"
+          echo "USERNAME     : $RDP_USERNAME"
+          echo "PASSWORD     : $RDP_PASSWORD"
+          echo ""
+          echo "RDP ADDRESS:"
+          echo "$TAILSCALE_IP:3389"
+          echo ""
+          echo "WEB VIEWER:"
+          echo "http://$TAILSCALE_IP:8006"
+          echo ""
+          echo "=============================================="
+          echo " KEEP ALIVE AKTIF"
+          echo " JANGAN CANCEL WORKFLOW"
+          echo "=============================================="
+          echo ""
+
+      # =========================================================
+      # 14. KEEP RDP ALIVE
+      # =========================================================
+      - name: Keep RDP Alive
+        shell: bash
+        run: |
+          echo "======================================"
+          echo " KEEP ALIVE"
+          echo "======================================"
+
+          while true; do
+
+            echo ""
+            echo "--------------------------------------"
+            echo "Time: $(date)"
+            echo "Tailscale IP: $TAILSCALE_IP"
+            echo "--------------------------------------"
+
+            # --------------------------------
+            # CHECK WINDOWS CONTAINER
+            # --------------------------------
+
+            if docker ps --format '{{.Names}}' | grep -q '^windows$'; then
+
+              echo "Windows container: RUNNING"
+
+            else
+
+              echo "Windows container: STOPPED"
+              echo "Restarting Windows..."
+
+              docker compose up -d
+
+            fi
+
+            # --------------------------------
+            # CHECK RDP
+            # --------------------------------
+
+            if nc -z 127.0.0.1 3389 2>/dev/null; then
+
+              echo "RDP 3389: LISTENING"
+
+            else
+
+              echo "RDP 3389: NOT LISTENING"
+
+            fi
+
+            # --------------------------------
+            # CHECK TAILSCALE
+            # --------------------------------
+
+            if tailscale status >/dev/null 2>&1; then
+
+              echo "Tailscale: CONNECTED"
+
+            else
+
+              echo "Tailscale: CHECK FAILED"
+
+            fi
+
+            # --------------------------------
+            # WINDOWS LOG CHECK
+            # --------------------------------
+
+            echo ""
+            echo "Windows container uptime:"
+
+            docker ps \
+              --filter "name=windows" \
+              --format "Status: {{.Status}}"
+
+            sleep 30
+
+          done
