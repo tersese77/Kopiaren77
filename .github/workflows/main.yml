@@ -1,49 +1,15 @@
-name: Windows RDP
-
-on:
-  workflow_dispatch:
-
-jobs:
-  windows-rdp:
-    runs-on: windows-latest
-    timeout-minutes: 350
-
-    steps:
-      - name: Show Windows information
-        shell: powershell
-        run: |
-          Write-Host "======================================"
-          Write-Host " WINDOWS RDP RUNNER"
-          Write-Host "======================================"
-          Get-ComputerInfo |
-            Select-Object WindowsProductName, WindowsVersion, OsBuildNumber
-
-      - name: Enable Remote Desktop
-        shell: powershell
-        run: |
-          Write-Host "Enabling Remote Desktop..."
-
-          Set-ItemProperty `
-            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
-            -Name "fDenyTSConnections" `
-            -Value 0
-
-          Set-ItemProperty `
-            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
-            -Name "UserAuthentication" `
-            -Value 0
-
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-          Restart-Service TermService -Force
-
-          Write-Host "RDP enabled."
-
-      - name: Create RDP user
+      - name: Create RDP user with random password
         shell: powershell
         run: |
           $username = "clouduser"
-          $password = "CloudRDP@2026!x"
+
+          $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%"
+
+          $password = -join (
+            1..18 | ForEach-Object {
+              $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)]
+            }
+          )
 
           $securePassword = ConvertTo-SecureString `
             $password `
@@ -69,93 +35,11 @@ jobs:
             -Group "Remote Desktop Users" `
             -Member $username
 
+          "RDP_USERNAME=$username" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "RDP_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Append
+
           Write-Host "======================================"
           Write-Host "RDP USER"
-          Write-Host "Username: $username"
-          Write-Host "Password: $password"
+          Write-Host "Username : $username"
+          Write-Host "Password : $password"
           Write-Host "======================================"
-
-      - name: Install Tailscale
-        shell: powershell
-        run: |
-          Write-Host "Installing Tailscale..."
-
-          $installer = "$env:TEMP\tailscale-setup.exe"
-
-          Invoke-WebRequest `
-            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
-            -OutFile $installer
-
-          Start-Process `
-            -FilePath $installer `
-            -ArgumentList "/quiet" `
-            -Wait
-
-          Start-Sleep -Seconds 10
-
-          Write-Host "Tailscale installed."
-
-      - name: Connect Tailscale
-        shell: powershell
-        env:
-          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
-        run: |
-          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
-            Write-Error "TS_AUTHKEY secret belum dibuat di GitHub."
-            exit 1
-          }
-
-          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-
-          if (!(Test-Path $tailscale)) {
-            Write-Error "tailscale.exe tidak ditemukan."
-            exit 1
-          }
-
-          & $tailscale up `
-            --authkey="$env:TS_AUTHKEY" `
-            --hostname="github-windows-rdp"
-
-          Start-Sleep -Seconds 8
-
-          Write-Host "======================================"
-          Write-Host "TAILSCALE STATUS"
-          Write-Host "======================================"
-
-          & $tailscale status
-
-      - name: Get Tailscale IP
-        shell: powershell
-        run: |
-          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
-
-          $ip = & $tailscale ip -4
-
-          Write-Host ""
-          Write-Host "======================================"
-          Write-Host " WINDOWS RDP READY"
-          Write-Host "======================================"
-          Write-Host "RDP IP      : $ip"
-          Write-Host "RDP PORT    : 3389"
-          Write-Host "USERNAME    : clouduser"
-          Write-Host "PASSWORD    : CloudRDP@2026!x"
-          Write-Host "======================================"
-          Write-Host ""
-          Write-Host "Connect using Windows Remote Desktop:"
-          Write-Host "$ip:3389"
-          Write-Host ""
-
-      - name: Keep RDP alive
-        shell: powershell
-        run: |
-          Write-Host "RDP session is running."
-          Write-Host "Do not stop this workflow while using RDP."
-
-          while ($true) {
-            Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] RDP alive"
-
-            Get-Service TermService |
-              Select-Object Status, Name
-
-            Start-Sleep -Seconds 60
-          }
