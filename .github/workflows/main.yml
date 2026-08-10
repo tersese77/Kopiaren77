@@ -10,17 +10,33 @@ jobs:
 
     steps:
 
+      # ============================================================
+      # CHECK RUNNER
+      # ============================================================
       - name: Check Runner
         run: |
-          echo "================================"
-          echo "LINUX RDP"
-          echo "================================"
+          echo "========================================"
+          echo "        LINUX XFCE RDP"
+          echo "========================================"
+
+          echo "OS:"
+          cat /etc/os-release
+
+          echo
           echo "CPU:"
           nproc
+
           echo
           echo "RAM:"
           free -h
 
+          echo
+          echo "DISK:"
+          df -h /
+
+      # ============================================================
+      # INSTALL XFCE + XRDP
+      # ============================================================
       - name: Install Desktop and XRDP
         run: |
           set -e
@@ -30,15 +46,30 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xfce4 \
             xfce4-goodies \
+            xfce4-session \
+            xfconf \
+            xfdesktop4 \
+            xfwm4 \
             xrdp \
             xorgxrdp \
             dbus-x11 \
+            dbus-user-session \
             xauth \
+            policykit-1 \
             curl \
             wget
 
-          echo "XFCE + XRDP berhasil diinstall."
+          echo
+          echo "========================================"
+          echo "XFCE + XRDP TERINSTALL"
+          echo "========================================"
 
+          xfce4-session --version || true
+          xrdp --version || true
+
+      # ============================================================
+      # CREATE RDP USER
+      # ============================================================
       - name: Create RDP User
         run: |
           set -e
@@ -50,8 +81,8 @@ jobs:
             echo "User sudah ada."
           else
             sudo useradd \
-              -m \
-              -s /bin/bash \
+              --create-home \
+              --shell /bin/bash \
               "$USERNAME"
           fi
 
@@ -59,38 +90,179 @@ jobs:
 
           sudo usermod -aG sudo "$USERNAME"
 
-          sudo -u "$USERNAME" bash -c \
-            'echo "startxfce4" > ~/.xsession'
+          # Pastikan home directory benar
+          sudo mkdir -p "/home/$USERNAME"
 
-          sudo chmod +x \
-            "/home/$USERNAME/.xsession"
+          sudo chown \
+            -R "$USERNAME:$USERNAME" \
+            "/home/$USERNAME"
+
+          echo
+          echo "USER INFO:"
+          id "$USERNAME"
+
+      # ============================================================
+      # CONFIGURE XFCE SESSION
+      # ============================================================
+      - name: Configure XFCE Session
+        run: |
+          set -e
+
+          USERNAME="rdpuser"
+          HOME_DIR="/home/$USERNAME"
+
+          echo "========================================"
+          echo "CONFIGURE XFCE"
+          echo "========================================"
+
+          # XFCE session untuk user RDP
+          sudo -u "$USERNAME" bash -c "cat > '$HOME_DIR/.xsession' <<'EOF'
+          #!/bin/bash
+
+          export LANG=C.UTF-8
+          export LANGUAGE=C.UTF-8
+          export LC_ALL=C.UTF-8
+
+          export XDG_CURRENT_DESKTOP=XFCE
+          export XDG_SESSION_DESKTOP=xfce
+          export DESKTOP_SESSION=xfce
+
+          export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg:/etc/xdg
+          export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
+
+          unset DBUS_SESSION_BUS_ADDRESS
+          unset XDG_RUNTIME_DIR
+
+          exec dbus-launch --exit-with-session startxfce4
+          EOF"
+
+          sudo chmod +x "$HOME_DIR/.xsession"
 
           sudo chown \
             "$USERNAME:$USERNAME" \
-            "/home/$USERNAME/.xsession"
+            "$HOME_DIR/.xsession"
 
-          echo "User RDP:"
-          id "$USERNAME"
+          # Buat config XFCE
+          sudo -u "$USERNAME" mkdir -p \
+            "$HOME_DIR/.config/xfce4"
 
+          # Bersihkan session lama
+          sudo -u "$USERNAME" rm -rf \
+            "$HOME_DIR/.cache/sessions"
+
+          echo
+          echo ".xsession:"
+          sudo cat "$HOME_DIR/.xsession"
+
+      # ============================================================
+      # CONFIGURE XRDP STARTUP
+      # ============================================================
       - name: Configure XRDP
         run: |
           set -e
 
+          echo "========================================"
+          echo "CONFIGURE XRDP"
+          echo "========================================"
+
+          # Backup konfigurasi asli
+          if [ -f /etc/xrdp/startwm.sh ]; then
+            sudo cp \
+              /etc/xrdp/startwm.sh \
+              /etc/xrdp/startwm.sh.backup
+          fi
+
+          # Startup XRDP khusus XFCE
+          sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
+          #!/bin/sh
+
+          export LANG=C.UTF-8
+          export LANGUAGE=C.UTF-8
+          export LC_ALL=C.UTF-8
+
+          export XDG_CURRENT_DESKTOP=XFCE
+          export XDG_SESSION_DESKTOP=xfce
+          export DESKTOP_SESSION=xfce
+
+          export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg:/etc/xdg
+          export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
+
+          unset DBUS_SESSION_BUS_ADDRESS
+          unset XDG_RUNTIME_DIR
+
+          if [ -r /etc/profile ]; then
+              . /etc/profile
+          fi
+
+          if [ -r "$HOME/.profile" ]; then
+              . "$HOME/.profile"
+          fi
+
+          exec dbus-launch --exit-with-session startxfce4
+          EOF
+
+          sudo chmod +x /etc/xrdp/startwm.sh
+
+          # Tambahkan xrdp ke ssl-cert
+          sudo adduser xrdp ssl-cert || true
+
+          # Enable service
           sudo systemctl enable xrdp
+
+          # Restart
           sudo systemctl restart xrdp
 
           sleep 5
 
-          echo "================================"
+          echo
+          echo "========================================"
           echo "XRDP STATUS"
-          echo "================================"
+          echo "========================================"
 
           sudo systemctl status xrdp --no-pager || true
 
           echo
-          echo "PORT 3389:"
+          echo "========================================"
+          echo "PORT 3389"
+          echo "========================================"
+
           sudo ss -lntp | grep ':3389' || true
 
+          echo
+          echo "========================================"
+          echo "STARTWM"
+          echo "========================================"
+
+          sudo cat /etc/xrdp/startwm.sh
+
+      # ============================================================
+      # CHECK XFCE
+      # ============================================================
+      - name: Test XFCE
+        run: |
+          echo "========================================"
+          echo "CHECK XFCE"
+          echo "========================================"
+
+          echo
+          echo "XFCE binaries:"
+
+          command -v startxfce4 || true
+          command -v xfce4-session || true
+          command -v xfconfd || true
+          command -v dbus-launch || true
+
+          echo
+          echo "XFCE version:"
+          xfce4-session --version || true
+
+          echo
+          echo "XRDP port:"
+          sudo ss -lntp | grep ':3389' || true
+
+      # ============================================================
+      # INSTALL TAILSCALE
+      # ============================================================
       - name: Install Tailscale
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
@@ -98,13 +270,13 @@ jobs:
           set -e
 
           if [ -z "$TS_AUTHKEY" ]; then
-            echo "ERROR: TS_AUTHKEY belum dibuat."
+            echo "ERROR: TS_AUTHKEY belum dibuat di GitHub Secrets."
             exit 1
           fi
 
-          echo "================================"
+          echo "========================================"
           echo "INSTALL TAILSCALE"
-          echo "================================"
+          echo "========================================"
 
           curl -fsSL \
             https://tailscale.com/install.sh | sh
@@ -116,20 +288,29 @@ jobs:
           sleep 5
 
           echo
-          echo "TAILSCALE STATUS:"
+          echo "========================================"
+          echo "TAILSCALE STATUS"
+          echo "========================================"
+
           sudo tailscale status
 
           echo
-          echo "TAILSCALE IP:"
+          echo "========================================"
+          echo "TAILSCALE IPV4"
+          echo "========================================"
+
           sudo tailscale ip -4
 
+      # ============================================================
+      # SHOW RDP INFORMATION
+      # ============================================================
       - name: Show RDP Information
         run: |
           TS_IP=$(sudo tailscale ip -4 | head -1)
 
           echo
           echo "=============================================="
-          echo "          LINUX RDP BERHASIL"
+          echo "           LINUX RDP BERHASIL"
           echo "=============================================="
           echo
           echo "RDP ADDRESS:"
@@ -145,11 +326,19 @@ jobs:
           echo "XFCE4"
           echo
           echo "=============================================="
+          echo
+          echo "Gunakan aplikasi Microsoft Remote Desktop"
+          echo "atau client RDP lainnya."
+          echo
+          echo "=============================================="
 
+      # ============================================================
+      # KEEP RDP ALIVE
+      # ============================================================
       - name: Keep RDP Alive
         run: |
           echo "=============================================="
-          echo "RDP SEDANG BERJALAN"
+          echo "          RDP SEDANG BERJALAN"
           echo "=============================================="
 
           TS_IP=$(sudo tailscale ip -4 | head -1)
@@ -162,12 +351,45 @@ jobs:
 
           while true; do
 
-            if ! sudo systemctl is-active --quiet xrdp; then
-              echo "XRDP mati, restart..."
+            echo
+            echo "----------------------------------------------"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] STATUS"
+            echo "----------------------------------------------"
+
+            # Cek XRDP
+            if sudo systemctl is-active --quiet xrdp; then
+              echo "XRDP : RUNNING"
+            else
+              echo "XRDP : STOPPED"
+              echo "Restart XRDP..."
+
               sudo systemctl restart xrdp
+
+              sleep 5
+
+              if sudo systemctl is-active --quiet xrdp; then
+                echo "XRDP berhasil direstart."
+              else
+                echo "WARNING: XRDP gagal restart."
+              fi
             fi
 
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RDP masih berjalan"
+            # Cek port
+            if sudo ss -lnt | grep -q ':3389'; then
+              echo "PORT : 3389 OPEN"
+            else
+              echo "PORT : 3389 CLOSED"
+            fi
+
+            # Cek Tailscale
+            if sudo tailscale status >/dev/null 2>&1; then
+              echo "TAILSCALE : OK"
+            else
+              echo "TAILSCALE : ERROR"
+            fi
+
+            echo
+            echo "RDP : $TS_IP:3389"
 
             sleep 60
 
