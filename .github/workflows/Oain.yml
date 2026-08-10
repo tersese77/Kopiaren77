@@ -36,7 +36,6 @@ jobs:
             ls -lh /dev/kvm
           else
             echo "ERROR: /dev/kvm tidak tersedia."
-            echo "Runner ini tidak mendukung KVM."
             exit 1
           fi
 
@@ -94,11 +93,11 @@ jobs:
           echo "TAILSCALE"
           echo "========================================"
 
-          tailscale status
-          tailscale ip -4
+          sudo tailscale status
+          sudo tailscale ip -4
 
       # ============================================================
-      # DOWNLOAD WINDOWS 10 7Z
+      # DOWNLOAD WINDOWS 10
       # ============================================================
       - name: Download Windows 10 Archive
         shell: bash
@@ -127,7 +126,7 @@ jobs:
           ls -lh "$HOME/windows10/windows10.7z"
 
       # ============================================================
-      # EXTRACT 7Z
+      # EXTRACT ARCHIVE
       # ============================================================
       - name: Extract Windows 10 Archive
         shell: bash
@@ -147,9 +146,10 @@ jobs:
 
           echo
           echo "Extracted files:"
+
           find "$HOME/windows10/extracted" \
             -type f \
-            -printf "%p  %k KB\n" | head -100
+            -print | head -100
 
       # ============================================================
       # FIND ISO
@@ -217,18 +217,15 @@ jobs:
 
           cat > "$HOME/windows10/autounattend/autounattend.xml" <<'EOF'
 <?xml version="1.0" encoding="utf-8"?>
-
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
-
-  <!-- ==========================================================
-       WINDOWS PE
-       ========================================================== -->
+<unattend
+  xmlns="urn:schemas-microsoft-com:unattend"
+  xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
 
   <settings pass="windowsPE">
 
     <component
       name="Microsoft-Windows-International-Core-WinPE"
-      processorArchitecture="amd64"
+      processorArchitecture="x86"
       publicKeyToken="31bf3856ad364e35"
       language="neutral"
       versionScope="nonSxS">
@@ -246,7 +243,7 @@ jobs:
 
     <component
       name="Microsoft-Windows-Setup"
-      processorArchitecture="amd64"
+      processorArchitecture="x86"
       publicKeyToken="31bf3856ad364e35"
       language="neutral"
       versionScope="nonSxS">
@@ -256,7 +253,6 @@ jobs:
         <Disk wcm:action="add">
 
           <DiskID>0</DiskID>
-
           <WillWipeDisk>true</WillWipeDisk>
 
           <CreatePartitions>
@@ -336,25 +332,18 @@ jobs:
       </ImageInstall>
 
       <UserData>
-
         <AcceptEula>true</AcceptEula>
-
       </UserData>
 
     </component>
 
   </settings>
 
-
-  <!-- ==========================================================
-       OOBE
-       ========================================================== -->
-
   <settings pass="oobeSystem">
 
     <component
       name="Microsoft-Windows-International-Core"
-      processorArchitecture="amd64"
+      processorArchitecture="x86"
       publicKeyToken="31bf3856ad364e35"
       language="neutral"
       versionScope="nonSxS">
@@ -366,35 +355,23 @@ jobs:
 
     </component>
 
-
     <component
       name="Microsoft-Windows-Shell-Setup"
-      processorArchitecture="amd64"
+      processorArchitecture="x86"
       publicKeyToken="31bf3856ad364e35"
       language="neutral"
       versionScope="nonSxS">
 
-
       <OOBE>
 
         <HideEULAPage>true</HideEULAPage>
-
         <HideLocalAccountScreen>true</HideLocalAccountScreen>
-
         <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
-
         <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
-
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
-
         <ProtectYourPC>3</ProtectYourPC>
 
       </OOBE>
-
-
-      <!-- ======================================================
-           RDP USER
-           ====================================================== -->
 
       <UserAccounts>
 
@@ -403,19 +380,13 @@ jobs:
           <LocalAccount wcm:action="add">
 
             <Name>rdpuser</Name>
-
             <DisplayName>RDP User</DisplayName>
-
             <Description>Windows RDP User</Description>
-
             <Group>Administrators</Group>
 
             <Password>
-
               <Value>RdpUser@12345</Value>
-
               <PlainText>true</PlainText>
-
             </Password>
 
           </LocalAccount>
@@ -424,17 +395,9 @@ jobs:
 
       </UserAccounts>
 
-
       <RegisteredOwner>RDP</RegisteredOwner>
-
       <RegisteredOrganization>Windows</RegisteredOrganization>
-
       <TimeZone>SE Asia Standard Time</TimeZone>
-
-
-      <!-- ======================================================
-           ENABLE RDP
-           ====================================================== -->
 
       <FirstLogonCommands>
 
@@ -448,7 +411,6 @@ jobs:
 
         </SynchronousCommand>
 
-
         <SynchronousCommand wcm:action="add">
 
           <Order>2</Order>
@@ -458,7 +420,6 @@ jobs:
           </CommandLine>
 
         </SynchronousCommand>
-
 
         <SynchronousCommand wcm:action="add">
 
@@ -479,7 +440,11 @@ jobs:
 </unattend>
 EOF
 
-          echo "Autounattend dibuat."
+          echo "Autounattend berhasil dibuat."
+
+          echo
+          echo "XML file:"
+          ls -lh "$HOME/windows10/autounattend/autounattend.xml"
 
       # ============================================================
       # CREATE AUTOUNATTEND ISO
@@ -554,6 +519,7 @@ EOF
           for i in $(seq 1 40); do
 
             if ! sudo kill -0 "$(cat "$HOME/windows10/qemu.pid")" 2>/dev/null; then
+
               echo "QEMU berhenti."
 
               echo
@@ -576,14 +542,15 @@ EOF
       - name: Show RDP Information
         shell: bash
         run: |
+
           echo
           echo "=================================================="
           echo "           WINDOWS 10 RDP READY"
           echo "=================================================="
+
+          TS_IP=$(sudo tailscale ip -4 | head -1)
+
           echo
-
-          TS_IP=$(tailscale ip -4 | head -1)
-
           echo "Tailscale IP:"
           echo "$TS_IP"
 
@@ -604,7 +571,7 @@ EOF
           echo "TAILSCALE STATUS"
           echo "=================================================="
 
-          tailscale status || true
+          sudo tailscale status || true
 
           echo
           echo "=================================================="
@@ -619,14 +586,18 @@ EOF
       - name: Keep Windows Running
         shell: bash
         run: |
+
           echo
           echo "=================================================="
           echo "WINDOWS 10 SEDANG BERJALAN"
           echo "=================================================="
+
+          TS_IP=$(sudo tailscale ip -4 | head -1)
+
           echo
-          echo "RDP : $(tailscale ip -4 | head -1):3389"
-          echo "USER: rdpuser"
-          echo "PASS: RdpUser@12345"
+          echo "RDP  : $TS_IP:3389"
+          echo "USER : rdpuser"
+          echo "PASS : RdpUser@12345"
           echo
 
           while true; do
@@ -642,7 +613,6 @@ EOF
               tail -200 "$HOME/windows10/logs/qemu.log" || true
 
               exit 1
-
             fi
 
             echo "[$(date '+%Y-%m-%d %H:%M:%S')] Windows masih berjalan"
