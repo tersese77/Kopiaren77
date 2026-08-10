@@ -1,0 +1,590 @@
+name: Windows 10 RDP - QEMU KVM
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows10:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+
+      # ============================================================
+      # CHECK RUNNER
+      # ============================================================
+      - name: Check Runner
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "RUNNER INFORMATION"
+          echo "========================================"
+
+          echo "CPU:"
+          nproc
+
+          echo
+          echo "RAM:"
+          free -h
+
+          echo
+          echo "KVM:"
+          if [ -e /dev/kvm ]; then
+            echo "/dev/kvm tersedia"
+            ls -lh /dev/kvm
+          else
+            echo "ERROR: /dev/kvm tidak tersedia."
+            exit 1
+          fi
+
+      # ============================================================
+      # INSTALL PACKAGES
+      # ============================================================
+      - name: Install QEMU and Tools
+        shell: bash
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            qemu-system-x86 \
+            qemu-utils \
+            p7zip-full \
+            wget \
+            curl \
+            genisoimage
+
+          echo
+          echo "QEMU VERSION:"
+          qemu-system-x86_64 --version
+
+          echo
+          echo "7-ZIP VERSION:"
+          7z
+
+      # ============================================================
+      # INSTALL TAILSCALE
+      # ============================================================
+      - name: Install Tailscale
+        shell: bash
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          set -e
+
+          if [ -z "$TS_AUTHKEY" ]; then
+            echo "ERROR: Secret TS_AUTHKEY belum dibuat."
+            exit 1
+          fi
+
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+          sudo tailscale up \
+            --authkey="$TS_AUTHKEY" \
+            --hostname="github-win10-${GITHUB_RUN_ID}"
+
+          echo
+          echo "========================================"
+          echo "TAILSCALE"
+          echo "========================================"
+
+          sudo tailscale status
+          sudo tailscale ip -4
+
+      # ============================================================
+      # DOWNLOAD WINDOWS 10
+      # ============================================================
+      - name: Download Windows 10
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "$HOME/windows10"
+
+          URL="https://od.meong.club/kyccn/TEMP/sof/win10.enterprise.LTSC.2019.x86.kyhAa.7z"
+
+          echo "========================================"
+          echo "DOWNLOAD WINDOWS 10"
+          echo "========================================"
+
+          echo "URL:"
+          echo "$URL"
+
+          wget \
+            --continue \
+            --progress=dot:giga \
+            -O "$HOME/windows10/windows10.7z" \
+            "$URL"
+
+          echo
+          echo "Archive:"
+          ls -lh "$HOME/windows10/windows10.7z"
+
+      # ============================================================
+      # EXTRACT WINDOWS
+      # ============================================================
+      - name: Extract Windows 10
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "$HOME/windows10/extracted"
+
+          echo "========================================"
+          echo "EXTRACT ARCHIVE"
+          echo "========================================"
+
+          7z x \
+            "$HOME/windows10/windows10.7z" \
+            -o"$HOME/windows10/extracted" \
+            -y
+
+          echo
+          echo "FILES:"
+          find "$HOME/windows10/extracted" -type f | head -100
+
+      # ============================================================
+      # FIND ISO
+      # ============================================================
+      - name: Find Windows ISO
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "SEARCH WINDOWS ISO"
+          echo "========================================"
+
+          ISO=$(find "$HOME/windows10/extracted" \
+            -type f \
+            -iname "*.iso" \
+            | head -1)
+
+          if [ -z "$ISO" ]; then
+            echo
+            echo "ERROR: ISO tidak ditemukan."
+
+            echo
+            echo "Isi archive:"
+            find "$HOME/windows10/extracted" -type f
+
+            exit 1
+          fi
+
+          echo "ISO ditemukan:"
+          echo "$ISO"
+
+          cp "$ISO" "$HOME/windows10/Win10.iso"
+
+          echo
+          echo "Windows ISO:"
+          ls -lh "$HOME/windows10/Win10.iso"
+
+      # ============================================================
+      # CHECK ISO
+      # ============================================================
+      - name: Check Windows ISO
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "CHECK ISO"
+          echo "========================================"
+
+          file "$HOME/windows10/Win10.iso"
+
+          echo
+          echo "ISO SIZE:"
+          du -h "$HOME/windows10/Win10.iso"
+
+          echo
+          echo "ISO INFORMATION:"
+          isoinfo -d \
+            -i "$HOME/windows10/Win10.iso" \
+            2>/dev/null || true
+
+      # ============================================================
+      # CREATE WINDOWS DISK
+      # ============================================================
+      - name: Create Windows Disk
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "CREATE WINDOWS DISK"
+          echo "========================================"
+
+          qemu-img create \
+            -f qcow2 \
+            "$HOME/windows10/windows10.qcow2" \
+            40G
+
+          qemu-img info \
+            "$HOME/windows10/windows10.qcow2"
+
+      # ============================================================
+      # CREATE AUTOUNATTEND XML
+      # ============================================================
+      - name: Create AutoUnattend
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "$HOME/windows10/autounattend"
+
+          cat > "$HOME/windows10/autounattend/autounattend.xml" <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <unattend
+            xmlns="urn:schemas-microsoft-com:unattend"
+            xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+
+            <settings pass="windowsPE">
+
+              <component
+                name="Microsoft-Windows-International-Core-WinPE"
+                processorArchitecture="x86"
+                publicKeyToken="31bf3856ad364e35"
+                language="neutral"
+                versionScope="nonSxS">
+
+                <SetupUILanguage>
+                  <UILanguage>en-US</UILanguage>
+                </SetupUILanguage>
+
+                <InputLocale>en-US</InputLocale>
+                <SystemLocale>en-US</SystemLocale>
+                <UILanguage>en-US</UILanguage>
+                <UserLocale>en-US</UserLocale>
+
+              </component>
+
+              <component
+                name="Microsoft-Windows-Setup"
+                processorArchitecture="x86"
+                publicKeyToken="31bf3856ad364e35"
+                language="neutral"
+                versionScope="nonSxS">
+
+                <UserData>
+                  <AcceptEula>true</AcceptEula>
+                </UserData>
+
+              </component>
+
+            </settings>
+
+            <settings pass="oobeSystem">
+
+              <component
+                name="Microsoft-Windows-International-Core"
+                processorArchitecture="x86"
+                publicKeyToken="31bf3856ad364e35"
+                language="neutral"
+                versionScope="nonSxS">
+
+                <InputLocale>en-US</InputLocale>
+                <SystemLocale>en-US</SystemLocale>
+                <UILanguage>en-US</UILanguage>
+                <UserLocale>en-US</UserLocale>
+
+              </component>
+
+              <component
+                name="Microsoft-Windows-Shell-Setup"
+                processorArchitecture="x86"
+                publicKeyToken="31bf3856ad364e35"
+                language="neutral"
+                versionScope="nonSxS">
+
+                <OOBE>
+                  <HideEULAPage>true</HideEULAPage>
+                  <HideLocalAccountScreen>true</HideLocalAccountScreen>
+                  <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>
+                  <HideOnlineAccountScreens>true</HideOnlineAccountScreens>
+                  <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
+                  <ProtectYourPC>3</ProtectYourPC>
+                </OOBE>
+
+                <UserAccounts>
+
+                  <LocalAccounts>
+
+                    <LocalAccount wcm:action="add">
+                      <Name>rdpuser</Name>
+                      <DisplayName>RDP User</DisplayName>
+                      <Description>Windows RDP User</Description>
+                      <Group>Administrators</Group>
+
+                      <Password>
+                        <Value>RdpUser@12345</Value>
+                        <PlainText>true</PlainText>
+                      </Password>
+
+                    </LocalAccount>
+
+                  </LocalAccounts>
+
+                </UserAccounts>
+
+                <AutoLogon>
+                  <Enabled>true</Enabled>
+                  <Username>rdpuser</Username>
+                  <LogonCount>3</LogonCount>
+
+                  <Password>
+                    <Value>RdpUser@12345</Value>
+                    <PlainText>true</PlainText>
+                  </Password>
+
+                </AutoLogon>
+
+                <RegisteredOwner>RDP</RegisteredOwner>
+                <RegisteredOrganization>Windows</RegisteredOrganization>
+                <TimeZone>SE Asia Standard Time</TimeZone>
+
+                <FirstLogonCommands>
+
+                  <SynchronousCommand wcm:action="add">
+                    <Order>1</Order>
+                    <CommandLine>powershell.exe -ExecutionPolicy Bypass -Command "Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0"</CommandLine>
+                  </SynchronousCommand>
+
+                  <SynchronousCommand wcm:action="add">
+                    <Order>2</Order>
+                    <CommandLine>powershell.exe -ExecutionPolicy Bypass -Command "Enable-NetFirewallRule -DisplayGroup 'Remote Desktop'"</CommandLine>
+                  </SynchronousCommand>
+
+                  <SynchronousCommand wcm:action="add">
+                    <Order>3</Order>
+                    <CommandLine>powershell.exe -ExecutionPolicy Bypass -Command "Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0"</CommandLine>
+                  </SynchronousCommand>
+
+                </FirstLogonCommands>
+
+              </component>
+
+            </settings>
+
+          </unattend>
+          EOF
+
+          echo "========================================"
+          echo "AUTOUNATTEND CREATED"
+          echo "========================================"
+
+          ls -lh "$HOME/windows10/autounattend/autounattend.xml"
+
+          echo
+          echo "XML CHECK:"
+          head -20 "$HOME/windows10/autounattend/autounattend.xml"
+
+      # ============================================================
+      # CREATE AUTOUNATTEND ISO
+      # ============================================================
+      - name: Create AutoUnattend ISO
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "CREATE AUTOUNATTEND ISO"
+          echo "========================================"
+
+          genisoimage \
+            -o "$HOME/windows10/autounattend.iso" \
+            -J \
+            -R \
+            "$HOME/windows10/autounattend"
+
+          ls -lh "$HOME/windows10/autounattend.iso"
+
+      # ============================================================
+      # START QEMU
+      # ============================================================
+      - name: Start Windows 10 VM
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p "$HOME/windows10/logs"
+
+          echo "========================================"
+          echo "START WINDOWS 10"
+          echo "========================================"
+
+          sudo qemu-system-i386 \
+            -enable-kvm \
+            -machine pc,accel=kvm \
+            -cpu max \
+            -smp 2 \
+            -m 4G \
+            -drive file="$HOME/windows10/windows10.qcow2",format=qcow2,if=ide \
+            -drive file="$HOME/windows10/Win10.iso",media=cdrom,readonly=on \
+            -drive file="$HOME/windows10/autounattend.iso",media=cdrom,readonly=on \
+            -boot order=d \
+            -netdev user,id=net0,hostfwd=tcp:3389-:3389 \
+            -device e1000,netdev=net0 \
+            -vga std \
+            -display none \
+            -daemonize \
+            -pidfile "$HOME/windows10/qemu.pid" \
+            -D "$HOME/windows10/logs/qemu.log"
+
+          sleep 10
+
+          if [ ! -f "$HOME/windows10/qemu.pid" ]; then
+            echo "ERROR: QEMU gagal start."
+            echo
+            echo "===== QEMU LOG ====="
+            cat "$HOME/windows10/logs/qemu.log" || true
+            exit 1
+          fi
+
+          PID=$(cat "$HOME/windows10/qemu.pid")
+
+          if ! sudo kill -0 "$PID" 2>/dev/null; then
+            echo "ERROR: QEMU langsung berhenti."
+            echo
+            echo "===== QEMU LOG ====="
+            cat "$HOME/windows10/logs/qemu.log" || true
+            exit 1
+          fi
+
+          echo "QEMU berhasil berjalan."
+          echo "PID: $PID"
+
+      # ============================================================
+      # WAIT WINDOWS INSTALL / BOOT
+      # ============================================================
+      - name: Wait For Windows
+        shell: bash
+        run: |
+          set -e
+
+          echo "========================================"
+          echo "WAIT FOR WINDOWS"
+          echo "========================================"
+
+          for i in $(seq 1 30); do
+
+            PID=$(cat "$HOME/windows10/qemu.pid")
+
+            if ! sudo kill -0 "$PID" 2>/dev/null; then
+
+              echo
+              echo "ERROR: QEMU berhenti."
+
+              echo
+              echo "===== QEMU LOG ====="
+
+              tail -300 "$HOME/windows10/logs/qemu.log" || true
+
+              exit 1
+
+            fi
+
+            echo "Windows/QEMU masih berjalan: $i/30"
+
+            sleep 30
+
+          done
+
+      # ============================================================
+      # SHOW CONNECTION
+      # ============================================================
+      - name: Show RDP Information
+        shell: bash
+        run: |
+
+          TS_IP=$(sudo tailscale ip -4 | head -1)
+
+          echo
+          echo "=================================================="
+          echo "              WINDOWS 10 RDP"
+          echo "=================================================="
+
+          echo
+          echo "TAILSCALE IP:"
+          echo "$TS_IP"
+
+          echo
+          echo "RDP ADDRESS:"
+          echo "$TS_IP:3389"
+
+          echo
+          echo "USERNAME:"
+          echo "rdpuser"
+
+          echo
+          echo "PASSWORD:"
+          echo "RdpUser@12345"
+
+          echo
+          echo "=================================================="
+          echo "TAILSCALE STATUS"
+          echo "=================================================="
+
+          sudo tailscale status || true
+
+          echo
+          echo "=================================================="
+          echo "QEMU STATUS"
+          echo "=================================================="
+
+          PID=$(cat "$HOME/windows10/qemu.pid")
+
+          if sudo kill -0 "$PID" 2>/dev/null; then
+            echo "QEMU: RUNNING"
+            echo "PID: $PID"
+          else
+            echo "QEMU: STOPPED"
+          fi
+
+      # ============================================================
+      # KEEP RUNNER ALIVE
+      # ============================================================
+      - name: Keep Windows Running
+        shell: bash
+        run: |
+
+          echo
+          echo "=================================================="
+          echo "WINDOWS 10 SEDANG BERJALAN"
+          echo "=================================================="
+
+          TS_IP=$(sudo tailscale ip -4 | head -1)
+
+          echo
+          echo "RDP  : $TS_IP:3389"
+          echo "USER : rdpuser"
+          echo "PASS : RdpUser@12345"
+          echo
+
+          while true; do
+
+            PID=$(cat "$HOME/windows10/qemu.pid")
+
+            if ! sudo kill -0 "$PID" 2>/dev/null; then
+
+              echo
+              echo "Windows/QEMU berhenti!"
+
+              echo
+              echo "===== QEMU LOG ====="
+
+              tail -300 "$HOME/windows10/logs/qemu.log" || true
+
+              exit 1
+
+            fi
+
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] Windows masih berjalan"
+
+            sleep 60
+
+          done
