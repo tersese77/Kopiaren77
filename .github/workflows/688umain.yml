@@ -1,4 +1,4 @@
-name: Debian KVM Desktop Wine MT5
+name: Debian KVM Desktop Wine
 
 on:
   workflow_dispatch:
@@ -9,7 +9,6 @@ jobs:
     timeout-minutes: 350
 
     env:
-      VM_NAME: debian-mt5
       VM_RAM: 4096
       VM_CPUS: 4
       VM_DISK: 20G
@@ -69,14 +68,10 @@ jobs:
             netcat-openbsd \
             openssh-client
 
-          echo "========================================"
-          echo "QEMU VERSION"
-          echo "========================================"
-
           qemu-system-x86_64 --version
 
       # ============================================================
-      # 3. PREPARE VM DIRECTORY
+      # 3. PREPARE VM
       # ============================================================
       - name: Prepare VM
         shell: bash
@@ -84,11 +79,7 @@ jobs:
           set -eux
 
           mkdir -p "$RUNNER_TEMP/vm"
-
-          cd "$RUNNER_TEMP/vm"
-
-          echo "VM directory:"
-          pwd
+          mkdir -p "$RUNNER_TEMP/ssh"
 
       # ============================================================
       # 4. DOWNLOAD DEBIAN 13
@@ -110,7 +101,7 @@ jobs:
       # ============================================================
       # 5. RESIZE DISK
       # ============================================================
-      - name: Resize Debian Disk
+      - name: Resize Disk
         shell: bash
         run: |
           set -eux
@@ -131,14 +122,14 @@ jobs:
         run: |
           set -eux
 
-          mkdir -p "$RUNNER_TEMP/ssh"
-
           ssh-keygen \
             -t ed25519 \
             -N "" \
             -f "$RUNNER_TEMP/ssh/id_ed25519"
 
-          echo "SSH_PUBLIC_KEY=$(cat "$RUNNER_TEMP/ssh/id_ed25519.pub")" >> "$GITHUB_ENV"
+          SSH_PUBLIC_KEY=$(cat "$RUNNER_TEMP/ssh/id_ed25519.pub")
+
+          echo "SSH_PUBLIC_KEY=$SSH_PUBLIC_KEY" >> "$GITHUB_ENV"
 
       # ============================================================
       # 7. CREATE CLOUD INIT
@@ -154,17 +145,13 @@ jobs:
 
           if [ -z "$TS_AUTHKEY" ]; then
             echo "ERROR: TS_AUTHKEY belum dibuat."
-            echo ""
-            echo "Buat:"
-            echo "Settings -> Secrets and variables -> Actions"
-            echo "Name: TS_AUTHKEY"
             exit 1
           fi
 
           cat > user-data <<EOF
           #cloud-config
 
-          hostname: debian-mt5
+          hostname: debian-desktop
 
           manage_etc_hosts: true
 
@@ -172,7 +159,7 @@ jobs:
 
           users:
             - name: debian
-              gecos: Debian MT5
+              gecos: Debian Desktop
               groups:
                 - sudo
               sudo:
@@ -184,25 +171,31 @@ jobs:
 
           package_update: true
 
-          package_upgrade: false
-
           packages:
             - openssh-server
 
+            # XFCE DESKTOP
             - xfce4
             - xfce4-goodies
             - xfce4-terminal
+            - thunar
 
+            # DISPLAY
             - xvfb
             - x11vnc
             - dbus-x11
 
+            # WINE
             - wine
             - wine64
             - wine32
             - fonts-wine
             - winbind
 
+            # BROWSER
+            - firefox-esr
+
+            # UTILITIES
             - wget
             - curl
             - ca-certificates
@@ -216,9 +209,9 @@ jobs:
 
           write_files:
 
-            # ------------------------------------------------------
+            # ======================================================
             # DESKTOP
-            # ------------------------------------------------------
+            # ======================================================
             - path: /home/debian/start-desktop.sh
               owner: debian:debian
               permissions: '0755'
@@ -227,12 +220,10 @@ jobs:
 
                 export DISPLAY=:1
 
-                mkdir -p /home/debian/.config
-
                 if ! pgrep -f "Xvfb :1" >/dev/null 2>&1; then
 
                   Xvfb :1 \
-                    -screen 0 1280x720x24 \
+                    -screen 0 1366x768x24 \
                     -ac \
                     +extension GLX \
                     +render \
@@ -252,9 +243,9 @@ jobs:
 
                 fi
 
-            # ------------------------------------------------------
+            # ======================================================
             # VNC
-            # ------------------------------------------------------
+            # ======================================================
             - path: /home/debian/start-vnc.sh
               owner: debian:debian
               permissions: '0755'
@@ -279,9 +270,9 @@ jobs:
 
                 fi
 
-            # ------------------------------------------------------
+            # ======================================================
             # NOVNC
-            # ------------------------------------------------------
+            # ======================================================
             - path: /home/debian/start-novnc.sh
               owner: debian:debian
               permissions: '0755'
@@ -305,9 +296,9 @@ jobs:
 
                 fi
 
-                if ! pgrep -f "novnc_proxy.*6080" >/dev/null 2>&1; then
+                cd /home/debian/noVNC
 
-                  cd /home/debian/noVNC
+                if ! pgrep -f "novnc_proxy" >/dev/null 2>&1; then
 
                   ./utils/novnc_proxy \
                     --vnc 127.0.0.1:5900 \
@@ -316,9 +307,9 @@ jobs:
 
                 fi
 
-            # ------------------------------------------------------
-            # WINE
-            # ------------------------------------------------------
+            # ======================================================
+            # WINE SETUP
+            # ======================================================
             - path: /home/debian/setup-wine.sh
               owner: debian:debian
               permissions: '0755'
@@ -333,94 +324,15 @@ jobs:
 
                 sleep 15
 
-            # ------------------------------------------------------
-            # MT5 INSTALLER
-            # ------------------------------------------------------
-            - path: /home/debian/install-mt5.sh
-              owner: debian:debian
-              permissions: '0755'
-              content: |
-                #!/bin/bash
-
-                export DISPLAY=:1
-                export WINEPREFIX=/home/debian/.wine
-
-                cd /home/debian
-
-                if [ ! -f /home/debian/mt5setup.exe ]; then
-
-                  wget \
-                    --show-progress \
-                    -O /home/debian/mt5setup.exe \
-                    "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
-
-                fi
-
-                echo "Starting MT5 installer..."
-
-                wine /home/debian/mt5setup.exe \
-                  > /home/debian/mt5-install.log 2>&1 &
-
-            # ------------------------------------------------------
-            # MT5 STARTER
-            # ------------------------------------------------------
-            - path: /home/debian/start-mt5.sh
-              owner: debian:debian
-              permissions: '0755'
-              content: |
-                #!/bin/bash
-
-                export DISPLAY=:1
-                export WINEPREFIX=/home/debian/.wine
-
-                echo "Searching MT5..."
-
-                MT5=""
-
-                for i in $(seq 1 60); do
-
-                  MT5=$(find \
-                    /home/debian/.wine/drive_c \
-                    -type f \
-                    -iname "terminal64.exe" \
-                    2>/dev/null \
-                    | head -1)
-
-                  if [ -n "$MT5" ]; then
-                    break
-                  fi
-
-                  echo "MT5 belum ditemukan... $i/60"
-
-                  sleep 5
-
-                done
-
-                if [ -z "$MT5" ]; then
-
-                  echo "MT5 executable tidak ditemukan."
-
-                  echo "Installer log:"
-                  tail -100 /home/debian/mt5-install.log 2>/dev/null || true
-
-                  exit 0
-
-                fi
-
                 echo "================================"
-                echo "MT5 FOUND"
+                echo "WINE READY"
                 echo "================================"
 
-                echo "$MT5"
+                wine --version
 
-                sleep 5
-
-                wine "$MT5" \
-                  > /home/debian/mt5.log 2>&1 &
-
-            # ------------------------------------------------------
+            # ======================================================
             # TAILSCALE
-            # ------------------------------------------------------
+            # ======================================================
             - path: /root/setup-tailscale.sh
               owner: root:root
               permissions: '0755'
@@ -438,8 +350,8 @@ jobs:
                 sleep 10
 
                 tailscale up \
-                  --authkey="${TS_AUTHKEY}" \
-                  --hostname="debian-mt5-${GITHUB_RUN_ID}" \
+                  --authkey="__TS_AUTHKEY__" \
+                  --hostname="debian-desktop" \
                   --accept-dns=false
 
           runcmd:
@@ -461,24 +373,16 @@ jobs:
             - su - debian -c "/home/debian/start-novnc.sh"
 
             # Tailscale
+            - sed -i "s|__TS_AUTHKEY__|${TS_AUTHKEY}|g" /root/setup-tailscale.sh
             - /root/setup-tailscale.sh
 
-            # MT5
-            - su - debian -c "/home/debian/install-mt5.sh"
-
-            # Wait installer
-            - sleep 60
-
-            # Start MT5
-            - su - debian -c "/home/debian/start-mt5.sh"
-
-          final_message: "Debian KVM MT5 ready."
+          final_message: "Debian Desktop + Wine ready."
 
           EOF
 
           cat > meta-data <<EOF
-          instance-id: debian-mt5-${GITHUB_RUN_ID}
-          local-hostname: debian-mt5
+          instance-id: debian-desktop-${GITHUB_RUN_ID}
+          local-hostname: debian-desktop
           EOF
 
           cloud-localds \
@@ -486,14 +390,10 @@ jobs:
             user-data \
             meta-data
 
-          echo "========================================"
-          echo "CLOUD INIT"
-          echo "========================================"
-
           ls -lh seed.iso
 
       # ============================================================
-      # 8. START QEMU/KVM
+      # 8. START KVM
       # ============================================================
       - name: Start Debian KVM
         shell: bash
@@ -501,10 +401,6 @@ jobs:
           set -eux
 
           cd "$RUNNER_TEMP/vm"
-
-          echo "========================================"
-          echo "START DEBIAN KVM"
-          echo "========================================"
 
           sudo qemu-system-x86_64 \
             -enable-kvm \
@@ -524,51 +420,34 @@ jobs:
 
           sleep 10
 
-          echo "========================================"
-          echo "QEMU PID"
-          echo "========================================"
-
+          echo "QEMU PID:"
           cat "$RUNNER_TEMP/qemu.pid"
 
-          echo ""
-          echo "========================================"
-          echo "QEMU PROCESS"
-          echo "========================================"
-
+          echo "QEMU:"
           ps aux | grep qemu | grep -v grep || true
 
-          echo ""
-          echo "========================================"
-          echo "KVM"
-          echo "========================================"
-
-          ls -lah /dev/kvm
-
       # ============================================================
-      # 9. WAIT SSH
+      # 9. WAIT DEBIAN
       # ============================================================
       - name: Wait Debian Boot
         shell: bash
         run: |
           set -eux
 
-          echo "Menunggu Debian boot..."
-
-          READY="false"
+          READY=false
 
           for i in $(seq 1 90); do
 
             if nc -z 127.0.0.1 2222 2>/dev/null; then
 
-              echo "SSH Debian sudah aktif."
+              echo "Debian SSH READY"
 
-              READY="true"
-
+              READY=true
               break
 
             fi
 
-            echo "Booting Debian... $i/90"
+            echo "Waiting Debian boot $i/90"
 
             sleep 5
 
@@ -576,10 +455,7 @@ jobs:
 
           if [ "$READY" != "true" ]; then
 
-            echo "ERROR: SSH Debian tidak aktif."
-
-            echo ""
-            echo "Serial log:"
+            echo "Debian gagal boot."
 
             tail -200 \
               "$RUNNER_TEMP/vm/qemu-serial.log" \
@@ -590,66 +466,27 @@ jobs:
           fi
 
       # ============================================================
-      # 10. WAIT CLOUD INIT
-      # ============================================================
-      - name: Wait Cloud Init
-        shell: bash
-        run: |
-          set +e
-
-          echo "Menunggu cloud-init..."
-
-          for i in $(seq 1 90); do
-
-            STATUS=$(ssh \
-              -i "$RUNNER_TEMP/ssh/id_ed25519" \
-              -o StrictHostKeyChecking=no \
-              -o UserKnownHostsFile=/dev/null \
-              -o ConnectTimeout=5 \
-              -p 2222 \
-              debian@127.0.0.1 \
-              "cloud-init status --wait 2>/dev/null" \
-              2>/dev/null || true)
-
-            echo "$STATUS"
-
-            if echo "$STATUS" | grep -q "done"; then
-
-              echo "Cloud-init selesai."
-
-              break
-
-            fi
-
-            sleep 5
-
-          done
-
-      # ============================================================
-      # 11. WAIT NOVNC
+      # 10. WAIT DESKTOP
       # ============================================================
       - name: Wait Desktop
         shell: bash
         run: |
           set -eux
 
-          echo "Menunggu noVNC..."
-
-          READY="false"
+          READY=false
 
           for i in $(seq 1 90); do
 
             if nc -z 127.0.0.1 6080 2>/dev/null; then
 
-              echo "noVNC aktif."
+              echo "noVNC READY"
 
-              READY="true"
-
+              READY=true
               break
 
             fi
 
-            echo "Menunggu desktop... $i/90"
+            echo "Waiting XFCE/noVNC $i/90"
 
             sleep 5
 
@@ -657,21 +494,19 @@ jobs:
 
           if [ "$READY" != "true" ]; then
 
-            echo "ERROR: noVNC tidak aktif."
+            echo "noVNC gagal start."
 
             exit 1
 
           fi
 
       # ============================================================
-      # 12. GET TAILSCALE IP
+      # 11. GET TAILSCALE IP
       # ============================================================
       - name: Get Tailscale IP
         shell: bash
         run: |
           set +e
-
-          echo "Mencari Tailscale IP..."
 
           TS_IP=""
 
@@ -698,20 +533,18 @@ jobs:
 
             fi
 
-            echo "Tailscale belum siap... $i/60"
+            echo "Waiting Tailscale $i/60"
 
             sleep 5
 
           done
 
           if [ -z "$TS_IP" ]; then
-
             echo "WARNING: Tailscale IP belum ditemukan."
-
           fi
 
       # ============================================================
-      # 13. CHECK EVERYTHING
+      # 12. FINAL TEST
       # ============================================================
       - name: Final Test
         shell: bash
@@ -720,26 +553,11 @@ jobs:
 
           echo ""
           echo "========================================"
-          echo "DEBIAN KVM STATUS"
+          echo "DEBIAN DESKTOP READY"
           echo "========================================"
 
           echo ""
-          echo "QEMU:"
-          ps aux | grep qemu | grep -v grep
-
-          echo ""
-          echo "KVM:"
-          ls -lah /dev/kvm
-
-          echo ""
-          echo "LOCAL PORTS:"
-          ss -lntp | grep -E "2222|5901|6080" || true
-
-          echo ""
-          echo "========================================"
-          echo "DEBIAN"
-          echo "========================================"
-
+          echo "Debian:"
           ssh \
             -i "$RUNNER_TEMP/ssh/id_ed25519" \
             -o StrictHostKeyChecking=no \
@@ -749,85 +567,60 @@ jobs:
             "cat /etc/debian_version"
 
           echo ""
-          echo "========================================"
-          echo "WINE"
-          echo "========================================"
-
+          echo "Wine:"
           ssh \
             -i "$RUNNER_TEMP/ssh/id_ed25519" \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
             -p 2222 \
             debian@127.0.0.1 \
-            "WINEPREFIX=/home/debian/.wine wine --version"
-
-          echo ""
-          echo "========================================"
-          echo "MT5"
-          echo "========================================"
-
-          ssh \
-            -i "$RUNNER_TEMP/ssh/id_ed25519" \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -p 2222 \
-            debian@127.0.0.1 \
-            "pgrep -af 'terminal.*exe' || true"
+            "wine --version"
 
           echo ""
           echo "========================================"
           echo "TAILSCALE"
           echo "========================================"
 
-          ssh \
-            -i "$RUNNER_TEMP/ssh/id_ed25519" \
-            -o StrictHostKeyChecking=no \
-            -o UserKnownHostsFile=/dev/null \
-            -p 2222 \
-            debian@127.0.0.1 \
-            "sudo tailscale status || true"
+          echo "$TS_IP"
 
           echo ""
           echo "========================================"
-          echo "REMOTE ACCESS"
+          echo "OPEN THIS FROM YOUR PHONE"
           echo "========================================"
 
-          if [ -n "${TS_IP:-}" ]; then
+          echo "http://$TS_IP:6080/vnc.html"
 
-            echo ""
-            echo "Tailscale IP:"
-            echo "$TS_IP"
+          echo ""
+          echo "========================================"
+          echo "DESKTOP"
+          echo "========================================"
 
-            echo ""
-            echo "noVNC:"
-            echo "http://$TS_IP:6080/vnc.html"
-
-            echo ""
-            echo "VNC:"
-            echo "$TS_IP:5900"
-
-          fi
+          echo "Debian XFCE"
+          echo "Wine installed"
+          echo "Firefox installed"
+          echo "MT5 NOT installed"
+          echo "Download MT5 yourself from Firefox."
 
       # ============================================================
-      # 14. KEEP ALIVE
+      # 13. KEEP ALIVE
       # ============================================================
-      - name: Keep Debian KVM Alive
+      - name: Keep Debian Alive
         shell: bash
         run: |
           set +e
 
           echo ""
           echo "========================================"
-          echo "DEBIAN + XFCE + WINE + MT5 READY"
+          echo "DEBIAN DESKTOP RUNNING"
           echo "========================================"
-
-          echo ""
-          echo "Tailscale IP:"
-          echo "$TS_IP"
 
           echo ""
           echo "noVNC:"
           echo "http://$TS_IP:6080/vnc.html"
+
+          echo ""
+          echo "Tailscale:"
+          echo "$TS_IP"
 
           echo ""
           echo "========================================"
@@ -835,30 +628,23 @@ jobs:
           while true; do
 
             echo ""
-            echo "========================================"
-            echo "$(date)"
-            echo "========================================"
-
-            QPID=""
+            echo "----- $(date) -----"
 
             if [ -f "$RUNNER_TEMP/qemu.pid" ]; then
+
               QPID=$(cat "$RUNNER_TEMP/qemu.pid")
-            fi
 
-            if [ -n "$QPID" ] && kill -0 "$QPID" 2>/dev/null; then
-
-              echo "QEMU: RUNNING"
-
-            else
-
-              echo "QEMU: STOPPED"
-
-              exit 1
+              if kill -0 "$QPID" 2>/dev/null; then
+                echo "QEMU: RUNNING"
+              else
+                echo "QEMU: STOPPED"
+                exit 1
+              fi
 
             fi
 
             echo ""
-            echo "Debian processes:"
+            echo "Desktop processes:"
 
             ssh \
               -i "$RUNNER_TEMP/ssh/id_ed25519" \
@@ -867,20 +653,15 @@ jobs:
               -o ConnectTimeout=5 \
               -p 2222 \
               debian@127.0.0.1 \
-              "pgrep -af 'Xvfb|xfce4-session|x11vnc|novnc|terminal.*exe' || true" \
+              "pgrep -af 'Xvfb|xfce4-session|x11vnc|novnc' || true" \
               2>/dev/null || true
-
-            echo ""
-            echo "Ports:"
-
-            ss -lntp | grep -E "2222|5901|6080" || true
 
             sleep 60
 
           done
 
       # ============================================================
-      # 15. DEBUG
+      # 14. DEBUG
       # ============================================================
       - name: Debug
         if: failure()
@@ -893,25 +674,25 @@ jobs:
           echo "========================================"
 
           echo ""
-          echo "QEMU:"
-          ps aux | grep qemu || true
-
-          echo ""
           echo "KVM:"
           ls -lah /dev/kvm || true
+
+          echo ""
+          echo "QEMU:"
+          ps aux | grep qemu || true
 
           echo ""
           echo "PORTS:"
           ss -lntp || true
 
           echo ""
-          echo "SERIAL LOG:"
+          echo "QEMU SERIAL:"
           tail -300 \
             "$RUNNER_TEMP/vm/qemu-serial.log" \
             2>/dev/null || true
 
           echo ""
-          echo "SSH TEST:"
+          echo "DEBIAN PROCESSES:"
 
           ssh \
             -i "$RUNNER_TEMP/ssh/id_ed25519" \
@@ -920,5 +701,5 @@ jobs:
             -o ConnectTimeout=5 \
             -p 2222 \
             debian@127.0.0.1 \
-            "echo SSH_OK; echo '--- CLOUD INIT ---'; sudo cloud-init status --long; echo '--- PROCESSES ---'; ps aux; echo '--- MT5 LOG ---'; tail -100 /home/debian/mt5.log 2>/dev/null; echo '--- MT5 INSTALL ---'; tail -100 /home/debian/mt5-install.log 2>/dev/null; echo '--- XFCE ---'; tail -100 /home/debian/xfce.log 2>/dev/null; echo '--- VNC ---'; tail -100 /home/debian/vnc.log 2>/dev/null; echo '--- NOVNC ---'; tail -100 /home/debian/novnc.log 2>/dev/null" \
+            "ps aux; echo '---'; tail -100 /home/debian/xfce.log 2>/dev/null; echo '---'; tail -100 /home/debian/vnc.log 2>/dev/null; echo '---'; tail -100 /home/debian/novnc.log 2>/dev/null; echo '---'; tail -100 /home/debian/wineboot.log 2>/dev/null" \
             || true
