@@ -1,0 +1,574 @@
+name: Android Emulator Remote V2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+
+      # ============================================================
+      # CHECK RUNNER
+      # ============================================================
+      - name: Check Runner
+        run: |
+          echo "=============================================="
+          echo "        ANDROID EMULATOR REMOTE V2"
+          echo "=============================================="
+
+          echo
+          echo "CPU:"
+          nproc
+
+          echo
+          echo "RAM:"
+          free -h
+
+          echo
+          echo "DISK:"
+          df -h /
+
+          echo
+          echo "KVM:"
+          if [ -e /dev/kvm ]; then
+            ls -l /dev/kvm
+            echo "KVM AVAILABLE"
+          else
+            echo "KVM NOT AVAILABLE"
+          fi
+
+      # ============================================================
+      # INSTALL DEPENDENCIES
+      # ============================================================
+      - name: Install Dependencies
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            qemu-kvm \
+            cpu-checker \
+            xvfb \
+            openbox \
+            x11vnc \
+            novnc \
+            websockify \
+            wget \
+            curl \
+            unzip \
+            adb
+
+          echo
+          echo "QEMU:"
+          qemu-system-x86_64 --version | head -1
+
+          echo
+          echo "ADB:"
+          adb version | head -2
+
+          echo
+          echo "KVM CHECK:"
+          sudo kvm-ok || true
+
+      # ============================================================
+      # INSTALL ANDROID SDK
+      # ============================================================
+      - name: Install Android SDK
+        run: |
+          set -e
+
+          export ANDROID_HOME="$HOME/android-sdk"
+
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+
+          cd /tmp
+
+          wget -q \
+            https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
+            -O android-cmdline.zip
+
+          rm -rf /tmp/cmdline-tools
+
+          mkdir -p /tmp/cmdline-tools
+
+          unzip -q \
+            android-cmdline.zip \
+            -d /tmp/cmdline-tools
+
+          mkdir -p \
+            "$ANDROID_HOME/cmdline-tools/latest"
+
+          cp -a \
+            /tmp/cmdline-tools/cmdline-tools/. \
+            "$ANDROID_HOME/cmdline-tools/latest/"
+
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+
+          echo
+          echo "SDKMANAGER:"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --version
+
+      # ============================================================
+      # INSTALL ANDROID SYSTEM IMAGE
+      # ============================================================
+      - name: Install Android Platform
+        run: |
+          set -e
+
+          export ANDROID_HOME="$HOME/android-sdk"
+
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+
+          sdkmanager \
+            "platform-tools" \
+            "emulator" \
+            "platforms;android-35" \
+            "system-images;android-35;google_apis;x86_64"
+
+          echo
+          echo "ANDROID PACKAGES:"
+          sdkmanager --list_installed | head -100
+
+      # ============================================================
+      # CREATE AVD
+      # ============================================================
+      - name: Create Android AVD
+        run: |
+          set -e
+
+          export ANDROID_HOME="$HOME/android-sdk"
+
+          echo "no" | avdmanager create avd \
+            --force \
+            --name "AndroidRemoteV2" \
+            --package "system-images;android-35;google_apis;x86_64" \
+            --device "pixel_6"
+
+          echo
+          echo "AVD LIST:"
+          emulator -list-avds
+
+          echo
+          echo "AVD CONFIG:"
+          cat "$HOME/.android/avd/AndroidRemoteV2.avd/config.ini"
+
+      # ============================================================
+      # START X SERVER
+      # ============================================================
+      - name: Start Virtual Display
+        run: |
+          set -e
+
+          export DISPLAY=:99
+
+          Xvfb :99 \
+            -screen 0 1280x720x24 \
+            -ac \
+            +extension GLX \
+            +render \
+            -noreset \
+            >/tmp/xvfb.log 2>&1 &
+
+          echo $! > /tmp/xvfb.pid
+
+          sleep 3
+
+          openbox \
+            >/tmp/openbox.log 2>&1 &
+
+          sleep 3
+
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+
+          echo
+          echo "DISPLAY:"
+          xdpyinfo -display :99 | head -20 || true
+
+      # ============================================================
+      # START ANDROID EMULATOR
+      # ============================================================
+      - name: Start Android Emulator
+        timeout-minutes: 12
+        run: |
+          set -u
+
+          export ANDROID_HOME="$HOME/android-sdk"
+          export DISPLAY=:99
+
+          echo "=============================================="
+          echo "STARTING ANDROID EMULATOR"
+          echo "=============================================="
+
+          rm -f /tmp/emulator.log
+          rm -f /tmp/emulator.pid
+
+          # Pastikan adb server bersih
+          adb kill-server || true
+          adb start-server
+
+          echo
+          echo "ADB SERVER:"
+          adb devices
+
+          echo
+          echo "START EMULATOR..."
+
+          nohup emulator \
+            -avd AndroidRemoteV2 \
+            -no-snapshot \
+            -no-boot-anim \
+            -no-audio \
+            -gpu swiftshader_indirect \
+            -accel auto \
+            -memory 3072 \
+            -cores 4 \
+            -camera-back none \
+            -camera-front none \
+            -verbose \
+            > /tmp/emulator.log 2>&1 &
+
+          EMULATOR_PID=$!
+
+          echo "$EMULATOR_PID" > /tmp/emulator.pid
+
+          echo
+          echo "EMULATOR PID:"
+          echo "$EMULATOR_PID"
+
+          echo
+          echo "Menunggu emulator boot..."
+
+          BOOT_OK=0
+
+          for i in $(seq 1 120); do
+
+            if ! kill -0 "$EMULATOR_PID" 2>/dev/null; then
+              echo
+              echo "ERROR: proses emulator berhenti."
+              break
+            fi
+
+            DEVICES=$(adb devices | grep -E '^emulator-[0-9]+[[:space:]]+device$' || true)
+
+            if [ -n "$DEVICES" ]; then
+
+              echo
+              echo "DEVICE TERDETEKSI:"
+              echo "$DEVICES"
+
+              BOOT_COMPLETED=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+
+              echo "BOOT STATUS: $BOOT_COMPLETED"
+
+              if [ "$BOOT_COMPLETED" = "1" ]; then
+                BOOT_OK=1
+                break
+              fi
+
+            else
+              echo "[$i/120] Menunggu device..."
+
+              adb devices || true
+            fi
+
+            sleep 5
+
+          done
+
+          echo
+          echo "=============================================="
+          echo "ANDROID BOOT RESULT"
+          echo "=============================================="
+
+          adb devices || true
+
+          if [ "$BOOT_OK" != "1" ]; then
+
+            echo
+            echo "ANDROID GAGAL BOOT."
+            echo
+            echo "===== EMULATOR LOG ====="
+
+            tail -300 /tmp/emulator.log || true
+
+            echo
+            echo "===== XVFB LOG ====="
+
+            tail -100 /tmp/xvfb.log || true
+
+            echo
+            echo "===== ADB LOG ====="
+
+            adb devices || true
+
+            exit 1
+          fi
+
+          echo
+          echo "ANDROID BERHASIL BOOT."
+
+          echo
+          echo "ANDROID VERSION:"
+          adb shell getprop ro.build.version.release
+
+          echo
+          echo "MODEL:"
+          adb shell getprop ro.product.model
+
+          echo
+          echo "SDK:"
+          adb shell getprop ro.build.version.sdk
+
+          echo
+          echo "SCREEN:"
+          adb shell wm size
+
+      # ============================================================
+      # ENABLE ADB TCP
+      # ============================================================
+      - name: Configure ADB
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "CONFIGURE ADB"
+          echo "=============================================="
+
+          adb tcpip 5555 || true
+
+          sleep 3
+
+          echo
+          echo "ADB DEVICES:"
+          adb devices
+
+          echo
+          echo "ANDROID IP:"
+          adb shell ip addr show 2>/dev/null | grep "inet " || true
+
+      # ============================================================
+      # START VNC
+      # ============================================================
+      - name: Start VNC
+        run: |
+          set -e
+
+          export DISPLAY=:99
+
+          echo "=============================================="
+          echo "START VNC"
+          echo "=============================================="
+
+          pkill x11vnc || true
+
+          x11vnc \
+            -display :99 \
+            -forever \
+            -shared \
+            -nopw \
+            -listen 0.0.0.0 \
+            -rfbport 5900 \
+            -noxdamage \
+            > /tmp/x11vnc.log 2>&1 &
+
+          sleep 5
+
+          echo
+          echo "VNC PORT:"
+          ss -lntp | grep ':5900' || true
+
+      # ============================================================
+      # START NOVNC
+      # ============================================================
+      - name: Start noVNC
+        run: |
+          set -e
+
+          echo "=============================================="
+          echo "START NOVNC"
+          echo "=============================================="
+
+          pkill websockify || true
+
+          websockify \
+            --web=/usr/share/novnc \
+            --heartbeat=30 \
+            6080 \
+            127.0.0.1:5900 \
+            > /tmp/novnc.log 2>&1 &
+
+          sleep 5
+
+          echo
+          echo "NOVNC PORT:"
+          ss -lntp | grep ':6080' || true
+
+      # ============================================================
+      # INSTALL TAILSCALE
+      # ============================================================
+      - name: Install Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          set -e
+
+          if [ -z "$TS_AUTHKEY" ]; then
+            echo "=============================================="
+            echo "ERROR: TS_AUTHKEY KOSONG"
+            echo "=============================================="
+            exit 1
+          fi
+
+          echo "=============================================="
+          echo "INSTALL TAILSCALE"
+          echo "=============================================="
+
+          curl -fsSL \
+            https://tailscale.com/install.sh | sh
+
+          sudo tailscale up \
+            --authkey="$TS_AUTHKEY" \
+            --hostname="github-android-v2-${GITHUB_RUN_ID}"
+
+          sleep 5
+
+          echo
+          echo "TAILSCALE STATUS:"
+          sudo tailscale status
+
+          echo
+          echo "TAILSCALE IPV4:"
+          sudo tailscale ip -4
+
+      # ============================================================
+      # FINAL TEST
+      # ============================================================
+      - name: Final Test
+        run: |
+          set -e
+
+          TS_IP=$(sudo tailscale ip -4 | head -1)
+
+          echo
+          echo "=============================================="
+          echo "           ANDROID EMULATOR READY"
+          echo "=============================================="
+
+          echo
+          echo "ANDROID:"
+          adb devices
+
+          echo
+          echo "VERSION:"
+          adb shell getprop ro.build.version.release
+
+          echo
+          echo "MODEL:"
+          adb shell getprop ro.product.model
+
+          echo
+          echo "DISPLAY:"
+          echo "$DISPLAY"
+
+          echo
+          echo "VNC:"
+          ss -lnt | grep ':5900' || true
+
+          echo
+          echo "NOVNC:"
+          ss -lnt | grep ':6080' || true
+
+          echo
+          echo "TAILSCALE IP:"
+          echo "$TS_IP"
+
+          echo
+          echo "=============================================="
+          echo "              REMOTE ACCESS"
+          echo "=============================================="
+
+          echo
+          echo "Buka di browser:"
+          echo
+          echo "http://$TS_IP:6080/vnc.html"
+
+          echo
+          echo "=============================================="
+
+      # ============================================================
+      # KEEP ALIVE
+      # ============================================================
+      - name: Keep Android Alive
+        run: |
+          TS_IP=$(sudo tailscale ip -4 | head -1)
+
+          echo
+          echo "================================================"
+          echo "       ANDROID EMULATOR SEDANG BERJALAN"
+          echo "================================================"
+
+          echo
+          echo "NOVNC:"
+          echo "http://$TS_IP:6080/vnc.html"
+
+          echo
+          echo "ANDROID:"
+          adb devices
+
+          echo
+          echo "================================================"
+
+          while true; do
+
+            echo
+            echo "-----------------------------------------------"
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] STATUS"
+            echo "-----------------------------------------------"
+
+            echo
+            echo "ADB:"
+            adb devices || true
+
+            echo
+            echo "BOOT:"
+            adb shell getprop sys.boot_completed 2>/dev/null || true
+
+            echo
+            echo "ANDROID:"
+            adb shell getprop ro.build.version.release 2>/dev/null || true
+
+            echo
+            echo "VNC:"
+            if ss -lnt | grep -q ':5900'; then
+              echo "RUNNING"
+            else
+              echo "STOPPED"
+            fi
+
+            echo
+            echo "NOVNC:"
+            if ss -lnt | grep -q ':6080'; then
+              echo "RUNNING"
+            else
+              echo "STOPPED"
+            fi
+
+            echo
+            echo "TAILSCALE:"
+            sudo tailscale ip -4 || true
+
+            echo
+            echo "NOVNC ADDRESS:"
+            echo "http://$TS_IP:6080/vnc.html"
+
+            sleep 60
+
+          done
