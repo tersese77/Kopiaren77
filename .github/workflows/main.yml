@@ -1,18 +1,174 @@
-name: Linux RDP Test
+name: Linux RDP
 
 on:
   workflow_dispatch:
 
 jobs:
-  test:
+  linux-rdp:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
 
     steps:
-      - name: Test
+
+      - name: Check Runner
         run: |
-          echo "GITHUB ACTIONS OK"
+          echo "================================"
+          echo "LINUX RDP"
+          echo "================================"
           echo "CPU:"
           nproc
+          echo
           echo "RAM:"
           free -h
-          
+
+      - name: Install Desktop and XRDP
+        run: |
+          set -e
+
+          sudo apt-get update
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xfce4 \
+            xfce4-goodies \
+            xrdp \
+            xorgxrdp \
+            dbus-x11 \
+            xauth \
+            curl \
+            wget
+
+          echo "XFCE + XRDP berhasil diinstall."
+
+      - name: Create RDP User
+        run: |
+          set -e
+
+          USERNAME="rdpuser"
+          PASSWORD="RdpUser@12345"
+
+          if id "$USERNAME" >/dev/null 2>&1; then
+            echo "User sudah ada."
+          else
+            sudo useradd \
+              -m \
+              -s /bin/bash \
+              "$USERNAME"
+          fi
+
+          echo "$USERNAME:$PASSWORD" | sudo chpasswd
+
+          sudo usermod -aG sudo "$USERNAME"
+
+          sudo -u "$USERNAME" bash -c \
+            'echo "startxfce4" > ~/.xsession'
+
+          sudo chmod +x \
+            "/home/$USERNAME/.xsession"
+
+          sudo chown \
+            "$USERNAME:$USERNAME" \
+            "/home/$USERNAME/.xsession"
+
+          echo "User RDP:"
+          id "$USERNAME"
+
+      - name: Configure XRDP
+        run: |
+          set -e
+
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+
+          sleep 5
+
+          echo "================================"
+          echo "XRDP STATUS"
+          echo "================================"
+
+          sudo systemctl status xrdp --no-pager || true
+
+          echo
+          echo "PORT 3389:"
+          sudo ss -lntp | grep ':3389' || true
+
+      - name: Install Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          set -e
+
+          if [ -z "$TS_AUTHKEY" ]; then
+            echo "ERROR: TS_AUTHKEY belum dibuat."
+            exit 1
+          fi
+
+          echo "================================"
+          echo "INSTALL TAILSCALE"
+          echo "================================"
+
+          curl -fsSL \
+            https://tailscale.com/install.sh | sh
+
+          sudo tailscale up \
+            --authkey="$TS_AUTHKEY" \
+            --hostname="github-linux-rdp-${GITHUB_RUN_ID}"
+
+          sleep 5
+
+          echo
+          echo "TAILSCALE STATUS:"
+          sudo tailscale status
+
+          echo
+          echo "TAILSCALE IP:"
+          sudo tailscale ip -4
+
+      - name: Show RDP Information
+        run: |
+          TS_IP=$(sudo tailscale ip -4 | head -1)
+
+          echo
+          echo "=============================================="
+          echo "          LINUX RDP BERHASIL"
+          echo "=============================================="
+          echo
+          echo "RDP ADDRESS:"
+          echo "$TS_IP:3389"
+          echo
+          echo "USERNAME:"
+          echo "rdpuser"
+          echo
+          echo "PASSWORD:"
+          echo "RdpUser@12345"
+          echo
+          echo "DESKTOP:"
+          echo "XFCE4"
+          echo
+          echo "=============================================="
+
+      - name: Keep RDP Alive
+        run: |
+          echo "=============================================="
+          echo "RDP SEDANG BERJALAN"
+          echo "=============================================="
+
+          TS_IP=$(sudo tailscale ip -4 | head -1)
+
+          echo
+          echo "RDP  : $TS_IP:3389"
+          echo "USER : rdpuser"
+          echo "PASS : RdpUser@12345"
+          echo
+
+          while true; do
+
+            if ! sudo systemctl is-active --quiet xrdp; then
+              echo "XRDP mati, restart..."
+              sudo systemctl restart xrdp
+            fi
+
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] RDP masih berjalan"
+
+            sleep 60
+
+          done
