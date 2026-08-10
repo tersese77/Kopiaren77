@@ -1,0 +1,232 @@
+name: Windows RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-rdp:
+    runs-on: windows-latest
+    timeout-minutes: 350
+
+    steps:
+
+      - name: Configure RDP
+        shell: powershell
+        run: |
+          Write-Host "Enabling Remote Desktop..."
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 0
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Set-Service -Name TermService -StartupType Automatic
+
+          Restart-Service -Name TermService -Force
+
+          Start-Sleep -Seconds 5
+
+          Write-Host "RDP configured."
+
+      - name: Create random RDP password
+        shell: powershell
+        run: |
+          $username = "clouduser"
+
+          $chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!"
+
+          $password = -join (
+            1..16 | ForEach-Object {
+              $chars[(Get-Random -Minimum 0 -Maximum $chars.Length)]
+            }
+          )
+
+          $securePassword = ConvertTo-SecureString `
+            $password `
+            -AsPlainText `
+            -Force
+
+          $oldUser = Get-LocalUser `
+            -Name $username `
+            -ErrorAction SilentlyContinue
+
+          if ($oldUser) {
+            Remove-LocalUser -Name $username
+          }
+
+          New-LocalUser `
+            -Name $username `
+            -Password $securePassword `
+            -FullName "Cloud RDP User" `
+            -Description "GitHub Actions RDP User" `
+            -PasswordNeverExpires `
+            -UserMayNotChangePassword
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $username
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username
+
+          "RDP_USERNAME=$username" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Append
+
+          "RDP_PASSWORD=$password" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Append
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "RDP ACCOUNT CREATED"
+          Write-Host "========================================"
+          Write-Host "Username : $username"
+          Write-Host "Password : $password"
+          Write-Host "========================================"
+
+      - name: Install Tailscale
+        shell: powershell
+        run: |
+          Write-Host "Downloading Tailscale..."
+
+          $installer = "$env:TEMP\tailscale-setup.exe"
+
+          Invoke-WebRequest `
+            -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" `
+            -OutFile $installer
+
+          Write-Host "Installing Tailscale..."
+
+          Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/quiet" `
+            -Wait
+
+          Start-Sleep -Seconds 10
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (!(Test-Path $tailscale)) {
+            Write-Error "Tailscale installation failed."
+            exit 1
+          }
+
+          Write-Host "Tailscale installed successfully."
+
+      - name: Connect Tailscale
+        shell: powershell
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TS_AUTHKEY)) {
+            Write-Error "TS_AUTHKEY belum dibuat di GitHub Secrets."
+            exit 1
+          }
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          Write-Host "Connecting to Tailscale..."
+
+          & $tailscale up `
+            --authkey="$env:TS_AUTHKEY" `
+            --hostname="github-windows-rdp"
+
+          Start-Sleep -Seconds 10
+
+          Write-Host ""
+          Write-Host "Tailscale status:"
+          & $tailscale status
+
+      - name: Get RDP connection information
+        shell: powershell
+        run: |
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          $ip = & $tailscale ip -4
+
+          if ([string]::IsNullOrWhiteSpace($ip)) {
+            Write-Error "Tailscale IPv4 tidak ditemukan."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "          WINDOWS RDP READY"
+          Write-Host "============================================"
+          Write-Host ""
+          Write-Host "RDP ADDRESS : $ip`:3389"
+          Write-Host "USERNAME    : $env:RDP_USERNAME"
+          Write-Host "PASSWORD    : $env:RDP_PASSWORD"
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "Gunakan Windows Remote Desktop."
+          Write-Host "============================================"
+          Write-Host ""
+
+      - name: Verify RDP service
+        shell: powershell
+        run: |
+          Write-Host "Checking RDP service..."
+
+          $service = Get-Service -Name TermService
+
+          Write-Host "Service : $($service.Name)"
+          Write-Host "Status  : $($service.Status)"
+
+          if ($service.Status -ne "Running") {
+            Write-Host "RDP service stopped. Starting..."
+
+            Start-Service -Name TermService
+
+            Start-Sleep -Seconds 5
+
+            $service = Get-Service -Name TermService
+
+            Write-Host "New status: $($service.Status)"
+          }
+
+          Write-Host "RDP service check completed."
+
+      - name: Keep Windows RDP alive
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "============================================"
+          Write-Host "RDP IS RUNNING"
+          Write-Host "============================================"
+          Write-Host "Workflow harus tetap berjalan."
+          Write-Host "Jangan tekan Cancel selama menggunakan RDP."
+          Write-Host "============================================"
+          Write-Host ""
+
+          while ($true) {
+
+            $service = Get-Service -Name TermService
+
+            if ($service.Status -ne "Running") {
+              Write-Host "RDP service stopped. Restarting..."
+              Start-Service -Name TermService
+            }
+
+            $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+            if (Test-Path $tailscale) {
+              $ip = & $tailscale ip -4
+
+              Write-Host ""
+              Write-Host "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')]"
+              Write-Host "RDP IP : $ip"
+              Write-Host "RDP Status : $((Get-Service TermService).Status)"
+            }
+
+            Start-Sleep -Seconds 60
+          }
