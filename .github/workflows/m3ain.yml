@@ -230,6 +230,3 @@ jobs:
 
             Start-Sleep -Seconds 60
           }
-- name: Kirim Detail RDP ke Dashboard
-      run: |
-        echo "::notice title=RDP_INFO::IP: ${{ steps.ngrok.outputs.ip }} | User: Administrator | Pass: ${{ secrets.RDP_PASSWORD }}"
