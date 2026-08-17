@@ -230,7 +230,7 @@ jobs:
 
             Start-Sleep -Seconds 60
           }
-- name: Get RDP connection information
+      - name: Get RDP connection information
         run: |
           $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
           $ip = & $tailscale ip -4
