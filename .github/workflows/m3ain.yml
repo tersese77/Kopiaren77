@@ -230,3 +230,10 @@ jobs:
 
             Start-Sleep -Seconds 60
           }
+- name: Get RDP connection information
+        run: |
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+          $ip = & $tailscale ip -4
+          
+          # Baris ini yang akan mengirimkan info ke Dashboard
+          echo "::notice title=RDP_INFO::IP: $ip:3389 | User: clouduser | Pass: MwVcViqUhCFSDzE!"
