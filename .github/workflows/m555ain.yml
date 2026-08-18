@@ -1,0 +1,383 @@
+name: Windows RDP + MT5 + Tailscale
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_hours:
+        description: "Durasi RDP"
+        required: true
+        default: "5"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+
+jobs:
+  windows-rdp:
+    runs-on: windows-2025
+    timeout-minutes: 360
+
+    steps:
+
+      # ==========================================
+      # WINDOWS INFO
+      # ==========================================
+      - name: Windows Information
+        shell: powershell
+        run: |
+          Write-Host "======================================"
+          Write-Host " Windows RDP + MT5"
+          Write-Host "======================================"
+
+          systeminfo | Select-String `
+            "OS Name",
+            "OS Version",
+            "System Type"
+
+      # ==========================================
+      # GENERATE RANDOM RDP PASSWORD
+      # ==========================================
+      - name: Generate RDP Password
+        id: password
+        shell: powershell
+        run: |
+          $upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+          $lower = "abcdefghijkmnopqrstuvwxyz"
+          $numbers = "23456789"
+          $symbols = "!@#$%"
+
+          $chars = $upper + $lower + $numbers + $symbols
+
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+
+          $passwordChars = New-Object System.Collections.Generic.List[char]
+
+          foreach ($set in @($upper,$lower,$numbers,$symbols)) {
+              $b = New-Object byte[] 1
+              $rng.GetBytes($b)
+              $passwordChars.Add(
+                  $set[$b[0] % $set.Length]
+              )
+          }
+
+          for ($i = 0; $i -lt 12; $i++) {
+              $b = New-Object byte[] 1
+              $rng.GetBytes($b)
+              $passwordChars.Add(
+                  $chars[$b[0] % $chars.Length]
+              )
+          }
+
+          $password = -join (
+              $passwordChars |
+              Sort-Object { Get-Random }
+          )
+
+          $rng.Dispose()
+
+          # Mask password pada log
+          Write-Output "::add-mask::$password"
+
+          # Simpan untuk step berikutnya
+          "RDP_PASSWORD=$password" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+          Write-Host ""
+          Write-Host "Random RDP password berhasil dibuat."
+          Write-Host "Password disembunyikan dari log."
+
+      # ==========================================
+      # CREATE RDP USER
+      # ==========================================
+      - name: Configure RDP User
+        shell: powershell
+        run: |
+          $username = "rdpuser"
+
+          $securePassword = ConvertTo-SecureString `
+            $env:RDP_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $existing = Get-LocalUser `
+            -Name $username `
+            -ErrorAction SilentlyContinue
+
+          if ($existing) {
+
+            Set-LocalUser `
+              -Name $username `
+              -Password $securePassword `
+              -PasswordNeverExpires $true
+
+          } else {
+
+            New-LocalUser `
+              -Name $username `
+              -Password $securePassword `
+              -PasswordNeverExpires `
+              -AccountNeverExpires `
+              -Description "Temporary RDP User"
+          }
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "RDP user berhasil dibuat: $username"
+
+      # ==========================================
+      # ENABLE RDP
+      # ==========================================
+      - name: Enable Remote Desktop
+        shell: powershell
+        run: |
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
+
+          Restart-Service TermService -Force
+
+          Write-Host "Remote Desktop berhasil diaktifkan."
+
+      # ==========================================
+      # TAILSCALE
+      # ==========================================
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
+      # ==========================================
+      # GET TAILSCALE IP
+      # ==========================================
+      - name: Get Tailscale IP
+        shell: powershell
+        run: |
+
+          Start-Sleep -Seconds 10
+
+          $tailscale = "$env:ProgramFiles\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscale)) {
+              throw "Tailscale tidak ditemukan."
+          }
+
+          $ip = & $tailscale ip -4
+
+          if (-not $ip) {
+              throw "Tailscale IPv4 tidak ditemukan."
+          }
+
+          "TAILSCALE_IP=$ip" | Out-File `
+            -FilePath $env:GITHUB_ENV `
+            -Encoding utf8 `
+            -Append
+
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host " TAILSCALE CONNECTED"
+          Write-Host "======================================"
+          Write-Host "Tailscale IPv4 : $ip"
+          Write-Host "======================================"
+
+      # ==========================================
+      # DOWNLOAD MT5
+      # ==========================================
+      - name: Download MetaTrader 5
+        shell: powershell
+        run: |
+
+          $url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
+
+          $installer = "$env:TEMP\mt5setup.exe"
+
+          Write-Host "Downloading MetaTrader 5..."
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer `
+            -UseBasicParsing
+
+          if (-not (Test-Path $installer)) {
+              throw "MT5 installer gagal didownload."
+          }
+
+          Write-Host "MT5 installer berhasil didownload."
+
+      # ==========================================
+      # INSTALL MT5
+      # ==========================================
+      - name: Install MetaTrader 5
+        shell: powershell
+        run: |
+
+          $installer = "$env:TEMP\mt5setup.exe"
+
+          Write-Host "Installing MetaTrader 5..."
+
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/auto" `
+            -Wait `
+            -PassThru
+
+          Write-Host "MT5 installer exit code: $($process.ExitCode)"
+
+          if ($process.ExitCode -ne 0) {
+              Write-Warning "Installer mengembalikan exit code $($process.ExitCode)."
+          }
+
+          Write-Host "MT5 installation selesai."
+
+      # ==========================================
+      # FIND MT5
+      # ==========================================
+      - name: Locate MT5
+        shell: powershell
+        run: |
+
+          Write-Host "Mencari terminal64.exe..."
+
+          $locations = @(
+              "$env:USERPROFILE\AppData\Roaming\MetaQuotes",
+              "$env:APPDATA\MetaQuotes",
+              "$env:ProgramFiles\MetaTrader 5",
+              "${env:ProgramFiles(x86)}\MetaTrader 5"
+          )
+
+          $found = $false
+
+          foreach ($location in $locations) {
+
+              if (Test-Path $location) {
+
+                  $result = Get-ChildItem `
+                    -Path $location `
+                    -Filter "terminal64.exe" `
+                    -Recurse `
+                    -ErrorAction SilentlyContinue |
+                    Select-Object -First 1
+
+                  if ($result) {
+
+                      Write-Host ""
+                      Write-Host "MT5 ditemukan:"
+                      Write-Host $result.FullName
+
+                      $found = $true
+                      break
+                  }
+              }
+          }
+
+          if (-not $found) {
+
+              Write-Warning "terminal64.exe belum ditemukan."
+              Write-Host "MT5 mungkin menggunakan lokasi instalasi berbeda."
+
+          }
+
+      # ==========================================
+      # CONNECTION INFORMATION
+      # ==========================================
+      - name: Show RDP Information
+        shell: powershell
+        run: |
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "              WINDOWS RDP READY"
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "RDP Address : $env:TAILSCALE_IP"
+          Write-Host "RDP Port    : 3389"
+          Write-Host "Username    : rdpuser"
+          Write-Host "Password    : [HIDDEN]"
+          Write-Host "MT5         : Installed"
+          Write-Host ""
+          Write-Host "Password RDP dibuat random pada setiap run."
+          Write-Host "=============================================="
+
+      # ==========================================
+      # SAVE CREDENTIALS AS ARTIFACT
+      # ==========================================
+      - name: Create RDP Credentials File
+        shell: powershell
+        run: |
+
+          @"
+          Windows RDP
+          ===========
+
+          Address : $env:TAILSCALE_IP
+          Port    : 3389
+          Username: rdpuser
+          Password: $env:RDP_PASSWORD
+
+          MT5: Installed
+          "@ | Out-File `
+            -FilePath "$env:RUNNER_TEMP\RDP-CREDENTIALS.txt" `
+            -Encoding utf8
+
+      - name: Upload RDP Credentials
+        uses: actions/upload-artifact@v4
+        with:
+          name: RDP-Credentials
+          path: ${{ runner.temp }}/RDP-CREDENTIALS.txt
+          retention-days: 1
+
+      # ==========================================
+      # KEEP RDP ALIVE
+      # ==========================================
+      - name: Keep RDP Alive
+        shell: powershell
+        env:
+          DURATION_HOURS: ${{ inputs.duration_hours }}
+        run: |
+
+          $minutes = [int]$env:DURATION_HOURS * 60
+
+          Write-Host ""
+          Write-Host "======================================"
+          Write-Host " RDP SESSION STARTED"
+          Write-Host "======================================"
+          Write-Host "Duration: $minutes minutes"
+          Write-Host ""
+          Write-Host "RDP Address : $env:TAILSCALE_IP"
+          Write-Host "Username    : rdpuser"
+          Write-Host "Password    : [HIDDEN]"
+          Write-Host "======================================"
+
+          for ($i = 0; $i -lt $minutes; $i++) {
+
+              Write-Host "[$($i + 1)/$minutes] RDP masih aktif..."
+
+              Start-Sleep -Seconds 60
+          }
+
+          Write-Host ""
+          Write-Host "Durasi selesai."
