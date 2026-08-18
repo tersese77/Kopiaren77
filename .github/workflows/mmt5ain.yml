@@ -1,0 +1,258 @@
+name: Windows RDP + MT5 + Tailscale
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration_hours:
+        description: "Berapa jam RDP dijalankan"
+        required: true
+        default: "5"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+
+jobs:
+  windows-rdp-mt5:
+    runs-on: windows-2025
+    timeout-minutes: 360
+
+    steps:
+
+      # =========================================================
+      # 1. INFO WINDOWS
+      # =========================================================
+      - name: Windows Information
+        shell: powershell
+        run: |
+          Write-Host "========================================"
+          Write-Host " WINDOWS RDP + MT5"
+          Write-Host "========================================"
+          systeminfo | Select-String "OS Name","OS Version","System Type"
+
+      # =========================================================
+      # 2. BUAT USER RDP
+      # =========================================================
+      - name: Configure RDP User
+        shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          $username = "rdpuser"
+
+          if (-not $env:RDP_PASSWORD) {
+            throw "Secret RDP_PASSWORD belum dibuat."
+          }
+
+          $securePassword = ConvertTo-SecureString `
+            $env:RDP_PASSWORD `
+            -AsPlainText `
+            -Force
+
+          $existing = Get-LocalUser -Name $username -ErrorAction SilentlyContinue
+
+          if ($existing) {
+            Set-LocalUser `
+              -Name $username `
+              -Password $securePassword `
+              -PasswordNeverExpires $true
+          }
+          else {
+            New-LocalUser `
+              -Name $username `
+              -Password $securePassword `
+              -PasswordNeverExpires `
+              -AccountNeverExpires `
+              -Description "Temporary RDP User"
+          }
+
+          Add-LocalGroupMember `
+            -Group "Administrators" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Add-LocalGroupMember `
+            -Group "Remote Desktop Users" `
+            -Member $username `
+            -ErrorAction SilentlyContinue
+
+          Write-Host "RDP user: $username"
+
+      # =========================================================
+      # 3. AKTIFKAN REMOTE DESKTOP
+      # =========================================================
+      - name: Enable Remote Desktop
+        shell: powershell
+        run: |
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 0
+
+          Enable-NetFirewallRule `
+            -DisplayGroup "Remote Desktop" `
+            -ErrorAction SilentlyContinue
+
+          Restart-Service TermService -Force
+
+          Write-Host "Remote Desktop enabled."
+
+      # =========================================================
+      # 4. INSTALL TAILSCALE
+      # =========================================================
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+
+      # =========================================================
+      # 5. CEK TAILSCALE IP
+      # =========================================================
+      - name: Get Tailscale IP
+        shell: powershell
+        run: |
+          Start-Sleep -Seconds 10
+
+          $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host " TAILSCALE RDP"
+          Write-Host "========================================"
+          Write-Host "Tailscale IPv4: $ip"
+          Write-Host "RDP Port: 3389"
+          Write-Host "Username: rdpuser"
+          Write-Host "========================================"
+          Write-Host ""
+
+      # =========================================================
+      # 6. DOWNLOAD MT5
+      # =========================================================
+      - name: Download MetaTrader 5
+        shell: powershell
+        run: |
+          $url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
+          $installer = "$env:TEMP\mt5setup.exe"
+
+          Write-Host "Downloading MetaTrader 5..."
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $installer `
+            -UseBasicParsing
+
+          if (-not (Test-Path $installer)) {
+            throw "MT5 installer gagal didownload."
+          }
+
+          Write-Host "MT5 installer berhasil didownload."
+
+      # =========================================================
+      # 7. INSTALL MT5
+      # =========================================================
+      - name: Install MetaTrader 5
+        shell: powershell
+        run: |
+          $installer = "$env:TEMP\mt5setup.exe"
+
+          Write-Host "Installing MetaTrader 5..."
+
+          Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/auto" `
+            -Wait `
+            -NoNewWindow
+
+          Write-Host "MT5 installation selesai."
+
+      # =========================================================
+      # 8. CARI MT5
+      # =========================================================
+      - name: Locate MT5
+        shell: powershell
+        run: |
+          $possiblePaths = @(
+            "$env:APPDATA\MetaQuotes\Terminal",
+            "$env:ProgramFiles\MetaTrader 5",
+            "${env:ProgramFiles(x86)}\MetaTrader 5"
+          )
+
+          foreach ($path in $possiblePaths) {
+            if (Test-Path $path) {
+              Write-Host "MT5 ditemukan: $path"
+            }
+          }
+
+          $mt5 = Get-ChildItem `
+            -Path "$env:USERPROFILE" `
+            -Filter "terminal64.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if ($mt5) {
+            Write-Host "terminal64.exe:"
+            Write-Host $mt5.FullName
+          }
+          else {
+            Write-Host "terminal64.exe belum ditemukan di USERPROFILE."
+          }
+
+      # =========================================================
+      # 9. INFO LOGIN
+      # =========================================================
+      - name: Display Connection Information
+        shell: powershell
+        run: |
+          $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "           RDP READY"
+          Write-Host "=============================================="
+          Write-Host ""
+          Write-Host "RDP Address : $ip"
+          Write-Host "RDP Port    : 3389"
+          Write-Host "Username    : rdpuser"
+          Write-Host ""
+          Write-Host "Password    : gunakan value secret RDP_PASSWORD"
+          Write-Host ""
+          Write-Host "MT5         : Installed"
+          Write-Host ""
+          Write-Host "=============================================="
+          Write-Host "Connect menggunakan Microsoft Remote Desktop."
+          Write-Host "=============================================="
+          Write-Host ""
+
+      # =========================================================
+      # 10. JAGA RUNNER TETAP HIDUP
+      # =========================================================
+      - name: Keep RDP Alive
+        shell: powershell
+        env:
+          DURATION_HOURS: ${{ inputs.duration_hours }}
+        run: |
+          $minutes = [int]$env:DURATION_HOURS * 60
+
+          Write-Host "RDP akan aktif selama $minutes menit."
+          Write-Host "Jangan Cancel workflow jika masih ingin menggunakan RDP."
+
+          for ($i = 0; $i -lt $minutes; $i++) {
+
+            $ip = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+
+            Write-Host "[$i/$minutes menit] RDP IP: $ip"
+
+            Start-Sleep -Seconds 60
+          }
+
+          Write-Host "Waktu RDP selesai."
