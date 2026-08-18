@@ -1,0 +1,100 @@
+name: Ubuntu XFCE RDP + Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-rdp:
+    runs-on: ubuntu-24.04
+
+    timeout-minutes: 360
+
+    steps:
+      - name: Setup XFCE + XRDP
+        run: |
+          sudo apt update
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+            xfce4 \
+            xfce4-goodies \
+            xrdp \
+            dbus-x11 \
+            curl
+
+          sudo systemctl enable xrdp
+          sudo systemctl restart xrdp
+
+          # Create RDP user
+          sudo useradd -m -s /bin/bash rdpuser || true
+          echo "rdpuser:UbuntuRDP@2026" | sudo chpasswd
+          sudo usermod -aG sudo rdpuser
+
+          # XFCE session
+          sudo -u rdpuser bash -c 'echo "startxfce4" > ~/.xsession'
+          sudo chmod 644 /home/rdpuser/.xsession
+          sudo chown rdpuser:rdpuser /home/rdpuser/.xsession
+
+          # XRDP configuration
+          sudo sed -i 's/^test -x/#test -x/' /etc/xrdp/startwm.sh
+          sudo sed -i 's/^exec /#exec /' /etc/xrdp/startwm.sh
+
+          sudo tee /etc/xrdp/startwm.sh > /dev/null <<'EOF'
+          #!/bin/sh
+          export LANG=en_US.UTF-8
+          export LC_ALL=en_US.UTF-8
+
+          startxfce4
+          EOF
+
+          sudo chmod +x /etc/xrdp/startwm.sh
+          sudo systemctl restart xrdp
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Connect Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          if [ -z "$TS_AUTHKEY" ]; then
+            echo "ERROR: TS_AUTHKEY secret belum dibuat."
+            exit 1
+          fi
+
+          sudo tailscale up \
+            --authkey="$TS_AUTHKEY" \
+            --hostname="github-ubuntu-rdp"
+
+      - name: Show RDP Information
+        run: |
+          echo "======================================"
+          echo "       UBUNTU RDP READY"
+          echo "======================================"
+          echo ""
+          echo "Username : rdpuser"
+          echo "Password : UbuntuRDP@2026"
+          echo ""
+          echo "Tailscale IP:"
+          sudo tailscale ip -4
+          echo ""
+          echo "RDP Port: 3389"
+          echo ""
+          echo "Connect menggunakan:"
+          echo "Tailscale-IP:3389"
+          echo ""
+          echo "======================================"
+
+      - name: Keep RDP Alive
+        run: |
+          echo "RDP sedang berjalan..."
+          echo "Stop workflow jika ingin mematikan server."
+
+          while true; do
+            echo "[$(date)] RDP masih aktif"
+            sudo systemctl is-active --quiet xrdp || {
+              echo "XRDP mati, mencoba restart..."
+              sudo systemctl restart xrdp
+            }
+
+            sleep 60
+          done
