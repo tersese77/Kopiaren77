@@ -1,0 +1,144 @@
+name: Kali Linux XFCE RDP + Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  kali-rdp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Install Docker
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y docker.io
+          sudo systemctl start docker
+          sudo systemctl enable docker
+
+      - name: Create Kali container
+        run: |
+          sudo docker pull kalilinux/kali-rolling
+
+          sudo docker run -d \
+            --name kali-rdp \
+            --hostname kali-rdp \
+            --privileged \
+            kalilinux/kali-rolling \
+            sleep infinity
+
+      - name: Install Kali Desktop + XRDP
+        run: |
+          sudo docker exec kali-rdp bash -c '
+            export DEBIAN_FRONTEND=noninteractive
+
+            apt-get update
+
+            apt-get install -y \
+              kali-desktop-xfce \
+              xrdp \
+              dbus-x11 \
+              sudo \
+              curl \
+              wget
+
+            useradd -m -s /bin/bash kaliuser || true
+
+            echo "kaliuser:KaliRDP@2026" | chpasswd
+
+            usermod -aG sudo kaliuser
+
+            echo "startxfce4" > /home/kaliuser/.xsession
+
+            chown kaliuser:kaliuser /home/kaliuser/.xsession
+            chmod 644 /home/kaliuser/.xsession
+
+            sed -i "s/^test -x/#test -x/" /etc/xrdp/startwm.sh
+            sed -i "s/^exec /#exec /" /etc/xrdp/startwm.sh
+
+            cat > /etc/xrdp/startwm.sh <<EOF
+            #!/bin/sh
+            export LANG=en_US.UTF-8
+            export LC_ALL=en_US.UTF-8
+            startxfce4
+            EOF
+
+            chmod +x /etc/xrdp/startwm.sh
+
+            service xrdp restart
+          '
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+      - name: Start Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          if [ -z "$TS_AUTHKEY" ]; then
+            echo "ERROR: TS_AUTHKEY belum dibuat."
+            exit 1
+          fi
+
+          sudo tailscaled --state=/tmp/tailscale.state &
+          sleep 3
+
+          sudo tailscale up \
+            --authkey="$TS_AUTHKEY" \
+            --hostname="github-kali-rdp"
+
+      - name: Forward RDP to Kali container
+        run: |
+          sudo docker inspect kali-rdp
+
+          CONTAINER_IP=$(sudo docker inspect \
+            -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+            kali-rdp)
+
+          echo "Kali container IP: $CONTAINER_IP"
+
+          sudo iptables -t nat -A PREROUTING \
+            -p tcp --dport 3389 \
+            -j DNAT \
+            --to-destination "$CONTAINER_IP:3389"
+
+          sudo iptables -A FORWARD \
+            -p tcp \
+            -d "$CONTAINER_IP" \
+            --dport 3389 \
+            -j ACCEPT
+
+      - name: Show RDP Information
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "        KALI LINUX RDP READY"
+          echo "=========================================="
+          echo ""
+          echo "Tailscale IP:"
+          sudo tailscale ip -4
+          echo ""
+          echo "RDP Port : 3389"
+          echo "Username : kaliuser"
+          echo "Password : KaliRDP@2026"
+          echo ""
+          echo "Connect dari HP:"
+          echo "Tailscale-IP:3389"
+          echo ""
+          echo "=========================================="
+
+      - name: Keep Runner Alive
+        run: |
+          while true; do
+            echo "[$(date)] Kali RDP masih aktif..."
+
+            if ! sudo docker exec kali-rdp \
+              service xrdp status >/dev/null 2>&1; then
+
+              echo "XRDP mati, restart..."
+              sudo docker exec kali-rdp service xrdp restart
+            fi
+
+            sleep 60
+          done
