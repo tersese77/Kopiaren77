@@ -1,0 +1,101 @@
+name: Dockur Windows RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check KVM
+        run: |
+          if [ ! -e /dev/kvm ]; then
+            echo "::error::KVM tidak tersedia pada runner ini."
+            exit 1
+          fi
+
+          echo "KVM tersedia:"
+          ls -l /dev/kvm
+
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
+      - name: Show Tailscale IP
+        run: |
+          echo "================================"
+          echo "TAILSCALE IP:"
+          tailscale ip -4
+          echo "================================"
+          tailscale status
+
+      - name: Create Dockur
+        run: |
+          mkdir -p ~/dockur/windows
+
+          cat > ~/dockur/docker-compose.yml <<'EOF'
+          services:
+            windows:
+              image: dockurr/windows:latest
+              container_name: windows
+
+              environment:
+                VERSION: "11"
+                RAM_SIZE: "8G"
+                CPU_CORES: "4"
+                DISK_SIZE: "64G"
+                USERNAME: "Docker"
+                PASSWORD: "ChangeThisPassword123!"
+
+              devices:
+                - /dev/kvm:/dev/kvm
+                - /dev/net/tun:/dev/net/tun
+
+              cap_add:
+                - NET_ADMIN
+
+              ports:
+                - "8006:8006"
+                - "3389:3389/tcp"
+                - "3389:3389/udp"
+
+              volumes:
+                - ~/dockur/windows:/storage
+
+              restart: unless-stopped
+              stop_grace_period: 2m
+          EOF
+
+      - name: Start Windows
+        run: |
+          cd ~/dockur
+          docker compose up -d
+
+      - name: Check Dockur
+        run: |
+          sleep 20
+          docker ps
+          docker logs windows --tail 100
+
+      - name: RDP Information
+        run: |
+          echo "================================"
+          echo "RDP ADDRESS"
+          echo "================================"
+          echo "Tailscale IP:"
+          tailscale ip -4
+          echo
+          echo "Port: 3389"
+          echo "Username: Docker"
+          echo "Password: ChangeThisPassword123!"
+          echo "================================"
+
+      - name: Keep runner alive
+        run: |
+          while true; do
+            echo "Windows VM masih berjalan..."
+            docker ps
+            sleep 60
+          done
