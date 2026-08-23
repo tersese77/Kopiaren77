@@ -1,0 +1,217 @@
+name: 9Router + Tailscal777e
+
+on:
+  workflow_dispatch:
+
+jobs:
+  router:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+
+      # ==============================
+      # NODE.JS
+      # ==============================
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # ==============================
+      # PYTHON
+      # ==============================
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ==============================
+      # INSTALL 9ROUTER
+      # ==============================
+      - name: Install 9Router
+        run: |
+          npm install -g 9router
+          echo "9Router installed"
+          9router --version || true
+
+      # ==============================
+      # TAILSCALE
+      # ==============================
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
+      - name: Check Tailscale
+        run: |
+          echo "===== TAILSCALE STATUS ====="
+          tailscale status
+
+          echo ""
+          echo "===== TAILSCALE IP ====="
+          tailscale ip -4
+
+      # ==============================
+      # INSTALL CADDY
+      # ==============================
+      - name: Install Caddy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+
+          curl -1sLf \
+            'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
+            | sudo gpg --dearmor \
+            -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+
+          curl -1sLf \
+            'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
+            | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+
+          sudo apt-get update
+          sudo apt-get install -y caddy
+
+      # ==============================
+      # START 9ROUTER LOCALHOST
+      # ==============================
+      - name: Start 9Router
+        env:
+          INITIAL_PASSWORD: ${{ secrets.ROUTER_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          PORT: "20128"
+          HOSTNAME: "127.0.0.1"
+          NODE_ENV: "production"
+        run: |
+
+          mkdir -p "$HOME/.9router"
+
+          nohup env \
+            INITIAL_PASSWORD="$INITIAL_PASSWORD" \
+            JWT_SECRET="$JWT_SECRET" \
+            PORT="20128" \
+            HOSTNAME="127.0.0.1" \
+            NODE_ENV="production" \
+            9router \
+            --host 127.0.0.1 \
+            --port 20128 \
+            > "$HOME/9router.log" 2>&1 &
+
+          echo $! > "$HOME/9router.pid"
+
+          echo "Menunggu 9Router..."
+
+          READY=false
+
+          for i in {1..60}; do
+
+            if curl -sf \
+              http://127.0.0.1:20128/health \
+              > /tmp/health.json; then
+
+              READY=true
+              echo "9Router ONLINE"
+              break
+
+            fi
+
+            echo "Percobaan $i/60"
+            sleep 2
+
+          done
+
+          echo ""
+          echo "===== 9ROUTER LOG ====="
+          cat "$HOME/9router.log" || true
+
+          if [ "$READY" != "true" ]; then
+            echo ""
+            echo "9Router gagal start."
+            exit 1
+          fi
+
+      # ==============================
+      # CADDY REVERSE PROXY
+      # ==============================
+      - name: Configure Web Proxy
+        run: |
+
+          TS_IP=$(tailscale ip -4 | head -n 1)
+
+          echo "Tailscale IP: $TS_IP"
+
+          sudo tee /etc/caddy/Caddyfile > /dev/null <<EOF
+          :20128 {
+              bind $TS_IP
+
+              reverse_proxy 127.0.0.1:20128
+          }
+          EOF
+
+          sudo systemctl restart caddy
+
+          sleep 3
+
+          echo "===== CADDY STATUS ====="
+          sudo systemctl --no-pager status caddy || true
+
+      # ==============================
+      # TEST LOCAL
+      # ==============================
+      - name: Test 9Router
+        run: |
+
+          echo "===== LOCAL HEALTH ====="
+
+          curl -i \
+            http://127.0.0.1:20128/health
+
+      # ==============================
+      # SHOW ACCESS
+      # ==============================
+      - name: Show Access
+        run: |
+
+          TS_IP=$(tailscale ip -4 | head -n 1)
+
+          echo ""
+          echo "=========================================="
+          echo "       9ROUTER ONLINE"
+          echo "=========================================="
+          echo ""
+          echo "BUKA DARI HP:"
+          echo ""
+          echo "http://$TS_IP:20128"
+          echo ""
+          echo "DASHBOARD:"
+          echo "http://$TS_IP:20128/dashboard"
+          echo ""
+          echo "API:"
+          echo "http://$TS_IP:20128/v1"
+          echo ""
+          echo "HEALTH:"
+          echo "http://$TS_IP:20128/health"
+          echo ""
+          echo "TAILSCALE IP:"
+          echo "$TS_IP"
+          echo ""
+          echo "=========================================="
+          echo "API KEY TIDAK DITAMPILKAN."
+          echo "=========================================="
+
+      # ==============================
+      # KEEP ALIVE
+      # ==============================
+      - name: Keep Alive
+        run: |
+
+          echo ""
+          echo "=========================================="
+          echo "9ROUTER + TAILSCALE AKTIF"
+          echo "=========================================="
+
+          while true
+          do
+            echo "[$(date)] 9Router masih aktif..."
+            sleep 300
+          done
