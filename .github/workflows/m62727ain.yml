@@ -1,0 +1,220 @@
+name: 9Router + Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  router:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+
+      # ==============================
+      # 1. NODE.JS
+      # ==============================
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+
+      # ==============================
+      # 2. INSTALL 9ROUTER
+      # ==============================
+      - name: Install 9Router
+        run: |
+          npm install -g 9router
+
+          echo "===== 9ROUTER VERSION ====="
+          9router --version || true
+
+
+      # ==============================
+      # 3. INSTALL TAILSCALE
+      # ==============================
+      - name: Connect Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TS_AUTHKEY }}
+
+
+      # ==============================
+      # 4. CHECK TAILSCALE
+      # ==============================
+      - name: Show Tailscale
+        run: |
+
+          echo "======================================"
+          echo "TAILSCALE STATUS"
+          echo "======================================"
+
+          tailscale status
+
+          echo ""
+          echo "======================================"
+          echo "TAILSCALE IP"
+          echo "======================================"
+
+          IP=$(tailscale ip -4 | head -n 1)
+
+          echo "IP: $IP"
+
+
+      # ==============================
+      # 5. CONFIG 9ROUTER
+      # ==============================
+      - name: Configure 9Router
+        env:
+          INITIAL_PASSWORD: ${{ secrets.ROUTER_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+
+          if [ -z "$INITIAL_PASSWORD" ]; then
+            echo "ERROR: ROUTER_PASSWORD belum dibuat."
+            exit 1
+          fi
+
+          if [ -z "$JWT_SECRET" ]; then
+            echo "ERROR: JWT_SECRET belum dibuat."
+            exit 1
+          fi
+
+          mkdir -p "$HOME/.9router"
+
+          echo "9Router configuration prepared."
+
+
+      # ==============================
+      # 6. START 9ROUTER
+      # ==============================
+      - name: Start 9Router
+        env:
+          INITIAL_PASSWORD: ${{ secrets.ROUTER_PASSWORD }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          PORT: "20128"
+          NODE_ENV: "production"
+        run: |
+
+          nohup 9router \
+            > "$HOME/9router.log" 2>&1 &
+
+          echo $! > "$HOME/9router.pid"
+
+          echo ""
+          echo "Menunggu 9Router..."
+
+          READY=false
+
+          for i in {1..60}; do
+
+            if curl -sf \
+              http://127.0.0.1:20128/health \
+              > /tmp/health.json; then
+
+              READY=true
+              break
+
+            fi
+
+            echo "Percobaan $i/60..."
+            sleep 2
+
+          done
+
+
+          echo ""
+          echo "======================================"
+          echo "9ROUTER HEALTH"
+          echo "======================================"
+
+          if [ "$READY" = true ]; then
+
+            cat /tmp/health.json
+
+            echo ""
+            echo "9Router ONLINE"
+
+          else
+
+            echo "9Router GAGAL START"
+            echo ""
+            echo "===== LOG ====="
+            cat "$HOME/9router.log" || true
+
+            exit 1
+
+          fi
+
+
+      # ==============================
+      # 7. TEST 9ROUTER
+      # ==============================
+      - name: Test 9Router
+        run: |
+
+          echo "======================================"
+          echo "9ROUTER TEST"
+          echo "======================================"
+
+          curl -i \
+            http://127.0.0.1:20128/health
+
+
+      # ==============================
+      # 8. SHOW ACCESS
+      # ==============================
+      - name: Show Access Information
+        run: |
+
+          IP=$(tailscale ip -4 | head -n 1)
+
+          echo ""
+          echo ""
+          echo "=============================================="
+          echo "          9ROUTER BERHASIL ONLINE"
+          echo "=============================================="
+          echo ""
+          echo "DARI HP YANG TERHUBUNG TAILSCALE:"
+          echo ""
+          echo "http://$IP:20128"
+          echo ""
+          echo "API:"
+          echo "http://$IP:20128/v1"
+          echo ""
+          echo "Health:"
+          echo "http://$IP:20128/health"
+          echo ""
+          echo "=============================================="
+          echo "TAILSCALE IP:"
+          echo "$IP"
+          echo "=============================================="
+          echo ""
+          echo "Login 9Router menggunakan password"
+          echo "yang kamu masukkan ke GitHub Secret:"
+          echo "ROUTER_PASSWORD"
+          echo ""
+          echo "API KEY TIDAK DITAMPILKAN DI LOG."
+          echo "Buat/lihat API key dari dashboard 9Router."
+          echo "=============================================="
+
+
+      # ==============================
+      # 9. KEEP ALIVE
+      # ==============================
+      - name: Keep Alive
+        run: |
+
+          echo ""
+          echo "======================================"
+          echo "9ROUTER + TAILSCALE AKTIF"
+          echo "======================================"
+
+          while true
+          do
+
+            echo "[$(date)] Server masih aktif."
+
+            sleep 300
+
+          done
