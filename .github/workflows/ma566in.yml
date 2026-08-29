@@ -1,0 +1,115 @@
+name: Ubuntu SSH via Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+
+      # ==============================
+      # INSTALL SSH
+      # ==============================
+      - name: Install SSH Server
+        run: |
+          sudo apt update
+          sudo apt install -y openssh-server curl
+
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
+
+          echo "SSH server installed."
+
+      # ==============================
+      # SET PASSWORD
+      # ==============================
+      - name: Set SSH Password
+        env:
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          echo "runner:${SSH_PASSWORD}" | sudo chpasswd
+
+          echo "SSH password configured."
+
+      # ==============================
+      # CONFIGURE SSH
+      # ==============================
+      - name: Configure SSH
+        run: |
+          sudo mkdir -p /run/sshd
+
+          sudo sed -i \
+            's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' \
+            /etc/ssh/sshd_config
+
+          sudo sed -i \
+            's/^#\?PubkeyAuthentication.*/PubkeyAuthentication yes/' \
+            /etc/ssh/sshd_config
+
+          sudo systemctl restart ssh
+
+          echo "SSH configured."
+
+      # ==============================
+      # INSTALL TAILSCALE
+      # ==============================
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+
+          tailscale version
+
+      # ==============================
+      # CONNECT TAILSCALE
+      # ==============================
+      - name: Connect Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          sudo tailscale up \
+            --auth-key="$TS_AUTHKEY" \
+            --hostname="github-ubuntu-ssh"
+
+          echo "Connected to Tailscale."
+
+      # ==============================
+      # SHOW CONNECTION INFORMATION
+      # ==============================
+      - name: Show SSH Information
+        run: |
+          IP=$(sudo tailscale ip -4)
+
+          echo ""
+          echo "=========================================="
+          echo "       UBUNTU SSH VIA TAILSCALE"
+          echo "=========================================="
+          echo ""
+          echo "Tailscale IP:"
+          echo "$IP"
+          echo ""
+          echo "SSH command for Termux:"
+          echo "ssh runner@$IP"
+          echo ""
+          echo "SSH username:"
+          echo "runner"
+          echo ""
+          echo "Password:"
+          echo "Password yang kamu masukkan di SSH_PASSWORD"
+          echo ""
+          echo "=========================================="
+
+      # ==============================
+      # KEEP RUNNER ALIVE
+      # ==============================
+      - name: Keep SSH Online
+        run: |
+          echo "SSH server is running."
+          echo "Tailscale is connected."
+          echo "Runner will stay online until the workflow timeout."
+
+          while true; do
+            sleep 60
+          done
