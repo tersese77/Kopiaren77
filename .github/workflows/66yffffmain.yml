@@ -1,0 +1,50 @@
+name: Ubuntu Docker SSH
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Jalankan Ubuntu Docker
+        run: |
+          docker run -d \
+            --name ubuntu-ssh \
+            -p 2222:22 \
+            ubuntu:24.04 \
+            sleep infinity
+
+      - name: Install SSH Server
+        run: |
+          docker exec ubuntu-ssh bash -c "
+            apt update &&
+            apt install -y openssh-server curl wget nano &&
+            mkdir -p /run/sshd &&
+            echo 'root:123456' | chpasswd &&
+            sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config &&
+            sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config &&
+            /usr/sbin/sshd
+          "
+
+      - name: Tampilkan IP
+        run: |
+          echo "================================"
+          echo "PUBLIC IP:"
+          curl -s https://api.ipify.org
+          echo
+          echo "SSH PORT: 2222"
+          echo "USERNAME: root"
+          echo "PASSWORD: 123456"
+          echo "================================"
+
+      - name: Test SSH
+        run: |
+          docker exec ubuntu-ssh bash -c "ss -lntp | grep ':22'"
+
+      - name: Tunggu
+        run: |
+          echo "Container Ubuntu berjalan..."
+          sleep 1500
