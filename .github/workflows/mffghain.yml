@@ -1,0 +1,139 @@
+name: Ubuntu Docker SSH 6 Hours
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-ssh:
+    runs-on: ubuntu-latest
+
+    # 6 jam
+    timeout-minutes: 360
+
+    steps:
+
+      # ==============================
+      # 1. Buat Docker Ubuntu
+      # ==============================
+      - name: Create Ubuntu Docker
+        run: |
+          docker run -d \
+            --name ubuntu-ssh \
+            ubuntu:24.04 \
+            sleep infinity
+
+      # ==============================
+      # 2. Install SSH + tmate
+      # ==============================
+      - name: Install SSH and tmate
+        run: |
+          docker exec ubuntu-ssh bash -c '
+            apt update &&
+            DEBIAN_FRONTEND=noninteractive apt install -y \
+              openssh-server \
+              tmate \
+              curl \
+              wget \
+              git \
+              nano \
+              iproute2 \
+              procps
+          '
+
+      # ==============================
+      # 3. Konfigurasi SSH
+      # ==============================
+      - name: Configure SSH
+        run: |
+          docker exec ubuntu-ssh bash -c '
+            mkdir -p /run/sshd
+
+            echo "root:123456" | chpasswd
+
+            sed -i "s/^#PermitRootLogin.*/PermitRootLogin yes/" \
+              /etc/ssh/sshd_config
+
+            sed -i "s/^#PasswordAuthentication.*/PasswordAuthentication yes/" \
+              /etc/ssh/sshd_config
+
+            /usr/sbin/sshd
+
+            echo "SSH SERVER AKTIF"
+            ss -lntp
+          '
+
+      # ==============================
+      # 4. Jalankan TMATE
+      # ==============================
+      - name: Start SSH Tunnel
+        run: |
+          docker exec -d ubuntu-ssh bash -c '
+            tmate -S /tmp/tmate.sock new-session -d
+            tmate -S /tmp/tmate.sock wait tmate-ready
+          '
+
+          sleep 10
+
+      # ==============================
+      # 5. Tampilkan SSH Termux
+      # ==============================
+      - name: Show SSH Command
+        run: |
+          echo
+          echo "=========================================="
+          echo "       UBUNTU DOCKER SSH - TERMUX"
+          echo "=========================================="
+          echo
+
+          docker exec ubuntu-ssh \
+            tmate -S /tmp/tmate.sock display -p "#{tmate_ssh}"
+
+          echo
+          echo "Copy perintah SSH di atas ke Termux."
+          echo
+
+          echo "=========================================="
+          echo "             AKSES"
+          echo "=========================================="
+          echo "Username : root"
+          echo "Password : 123456"
+          echo "Durasi   : 6 JAM"
+          echo "=========================================="
+
+      # ==============================
+      # 6. Informasi sistem
+      # ==============================
+      - name: System Information
+        run: |
+          docker exec ubuntu-ssh bash -c '
+            echo
+            echo "========== UBUNTU =========="
+            cat /etc/os-release
+
+            echo
+            echo "========== KERNEL =========="
+            uname -a
+
+            echo
+            echo "========== IP =========="
+            hostname -I
+
+            echo
+            echo "========== DISK =========="
+            df -h
+          '
+
+      # ==============================
+      # 7. Pertahankan selama 6 jam
+      # ==============================
+      - name: Keep Ubuntu Alive
+        run: |
+          echo
+          echo "=========================================="
+          echo "Ubuntu Docker aktif selama 6 jam."
+          echo "Jangan hentikan workflow jika masih ingin"
+          echo "mengakses Ubuntu dari Termux."
+          echo "=========================================="
+          echo
+
+          sleep 21600
