@@ -1,0 +1,142 @@
+name: Ubuntu Docker SSH 6 Hours
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+
+      # =========================
+      # 1. BUAT UBUNTU CONTAINER
+      # =========================
+      - name: Create Ubuntu Docker
+        run: |
+          docker run -d \
+            --name ubuntu-ssh \
+            ubuntu:24.04 \
+            sleep infinity
+
+      # =========================
+      # 2. INSTALL SSH + TMATE
+      # =========================
+      - name: Install SSH and tmate
+        run: |
+          docker exec ubuntu-ssh bash -c '
+            apt update &&
+            DEBIAN_FRONTEND=noninteractive apt install -y \
+              openssh-server \
+              tmate \
+              curl \
+              wget \
+              git \
+              nano \
+              iproute2 \
+              procps
+          '
+
+      # =========================
+      # 3. KONFIGURASI SSH
+      # =========================
+      - name: Configure SSH
+        run: |
+          PASSWORD=$(openssl rand -base64 18)
+
+          echo "SSH_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+
+          docker exec ubuntu-ssh bash -c "
+            mkdir -p /run/sshd
+
+            echo 'root:$PASSWORD' | chpasswd
+
+            sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+            sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+            /usr/sbin/sshd
+          "
+
+      # =========================
+      # 4. START TMATE
+      # =========================
+      - name: Start Public SSH
+        run: |
+          docker exec -d ubuntu-ssh bash -c '
+            tmate -S /tmp/tmate.sock new-session -d
+            tmate -S /tmp/tmate.sock wait tmate-ready
+          '
+
+          sleep 10
+
+      # =========================
+      # 5. TAMPILKAN SEMUA INFO
+      # =========================
+      - name: Show Termux Login
+        run: |
+
+          PUBLIC_IP=$(curl -4 -s https://api.ipify.org)
+
+          CONTAINER_IP=$(docker inspect \
+            -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+            ubuntu-ssh)
+
+          HOSTNAME=$(docker exec ubuntu-ssh hostname)
+
+          SSH_COMMAND=$(docker exec ubuntu-ssh \
+            tmate -S /tmp/tmate.sock display -p "#{tmate_ssh}")
+
+          echo
+          echo "================================================"
+          echo "           UBUNTU DOCKER SSH"
+          echo "================================================"
+          echo
+          echo "PUBLIC IP     : $PUBLIC_IP"
+          echo "CONTAINER IP  : $CONTAINER_IP"
+          echo "HOSTNAME      : $HOSTNAME"
+          echo
+          echo "USERNAME      : root"
+          echo "PASSWORD      : $SSH_PASSWORD"
+          echo
+          echo "================================================"
+          echo "          COPY INI KE TERMUX"
+          echo "================================================"
+          echo
+          echo "$SSH_COMMAND"
+          echo
+          echo "================================================"
+          echo "              DURASI: 6 JAM"
+          echo "================================================"
+          echo
+
+      # =========================
+      # 6. INFO UBUNTU
+      # =========================
+      - name: Ubuntu Information
+        run: |
+          docker exec ubuntu-ssh bash -c '
+            echo "========== UBUNTU =========="
+            cat /etc/os-release
+
+            echo
+            echo "========== KERNEL =========="
+            uname -a
+
+            echo
+            echo "========== MEMORY =========="
+            free -h
+
+            echo
+            echo "========== DISK =========="
+            df -h
+          '
+
+      # =========================
+      # 7. KEEP ALIVE 6 JAM
+      # =========================
+      - name: Keep Alive
+        run: |
+          echo "Ubuntu Docker aktif."
+          echo "Jangan stop workflow jika masih ingin terhubung."
+          sleep 21600
