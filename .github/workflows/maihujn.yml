@@ -1,0 +1,122 @@
+name: Ubuntu Docker SSH 6 Hours
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+
+      - name: Create Ubuntu Docker
+        run: |
+          docker run -d \
+            --name ubuntu-ssh \
+            ubuntu:24.04 \
+            sleep infinity
+
+      - name: Install SSH and tmate
+        run: |
+          docker exec ubuntu-ssh bash -c '
+            apt update &&
+            DEBIAN_FRONTEND=noninteractive apt install -y \
+              openssh-server \
+              tmate \
+              curl \
+              wget \
+              git \
+              nano \
+              iproute2 \
+              procps \
+              openssl
+          '
+
+      - name: Configure SSH
+        run: |
+          PASSWORD=$(openssl rand -base64 18)
+          echo "SSH_PASSWORD=$PASSWORD" >> "$GITHUB_ENV"
+
+          docker exec ubuntu-ssh bash -c "
+            mkdir -p /run/sshd
+            echo 'root:$PASSWORD' | chpasswd
+
+            sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+            sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+            /usr/sbin/sshd
+          "
+
+      - name: Start Public SSH
+        run: |
+          docker exec -d ubuntu-ssh bash -c '
+            rm -f /tmp/tmate.sock
+
+            tmate -S /tmp/tmate.sock new-session -d
+            tmate -S /tmp/tmate.sock wait tmate-ready
+          '
+
+      - name: Wait for SSH address
+        run: |
+          echo "Menunggu alamat SSH publik..."
+
+          for i in $(seq 1 30); do
+            SSH_COMMAND=$(docker exec ubuntu-ssh \
+              tmate -S /tmp/tmate.sock display -p '#{tmate_ssh}' 2>/dev/null || true)
+
+            if [ -n "$SSH_COMMAND" ]; then
+              echo "SSH siap!"
+              break
+            fi
+
+            echo "Menunggu... $i/30"
+            sleep 2
+          done
+
+          if [ -z "$SSH_COMMAND" ]; then
+            echo "ERROR: tmate tidak mendapatkan alamat SSH."
+            echo
+            docker exec ubuntu-ssh \
+              tmate -S /tmp/tmate.sock show-messages || true
+            exit 1
+          fi
+
+          echo "SSH_COMMAND=$SSH_COMMAND" >> "$GITHUB_ENV"
+
+      - name: Show Termux Login
+        run: |
+          PUBLIC_IP=$(curl -4 -s https://api.ipify.org)
+
+          CONTAINER_IP=$(docker inspect \
+            -f '{{range.NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+            ubuntu-ssh)
+
+          HOSTNAME=$(docker exec ubuntu-ssh hostname)
+
+          echo
+          echo "=============================================="
+          echo "          UBUNTU DOCKER SSH"
+          echo "=============================================="
+          echo
+          echo "PUBLIC IP    : $PUBLIC_IP"
+          echo "CONTAINER IP : $CONTAINER_IP"
+          echo "HOSTNAME     : $HOSTNAME"
+          echo
+          echo "USERNAME     : root"
+          echo "PASSWORD     : $SSH_PASSWORD"
+          echo
+          echo "=============================================="
+          echo "       COPY COMMAND INI KE TERMUX"
+          echo "=============================================="
+          echo
+          echo "$SSH_COMMAND"
+          echo
+          echo "=============================================="
+          echo "             DURASI 6 JAM"
+          echo "=============================================="
+
+      - name: Keep Ubuntu Alive
+        run: |
+          echo "Ubuntu Docker aktif selama 6 jam."
+          sleep 21600
