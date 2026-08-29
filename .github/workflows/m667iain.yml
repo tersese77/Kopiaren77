@@ -1,0 +1,34 @@
+name: Ubuntu + IP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Tampilkan IP
+        run: |
+          echo "=== IP PUBLIC ==="
+          curl -s https://api.ipify.org
+          echo
+          echo
+          echo "=== IP LOKAL ==="
+          hostname -I
+
+      - name: Update Ubuntu
+        run: |
+          sudo apt update
+
+      - name: Install tools
+        run: |
+          sudo apt install -y curl wget git nano
+
+      - name: Info sistem
+        run: |
+          echo "=== OS ==="
+          cat /etc/os-release
+          echo
+          echo "=== Kernel ==="
+          uname -a
