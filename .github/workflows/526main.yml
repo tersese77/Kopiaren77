@@ -1,0 +1,59 @@
+name: Ubuntu SSH via Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ubuntu-ssh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install SSH Server
+        run: |
+          sudo apt update
+          sudo apt install -y openssh-server curl
+
+          sudo systemctl enable ssh
+          sudo systemctl start ssh
+
+          echo "SSH server started"
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          tailscale version
+
+      - name: Connect to Tailscale
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          sudo tailscale up \
+            --auth-key="$TS_AUTHKEY" \
+            --hostname="github-ubuntu-ssh"
+
+      - name: Show Tailscale IP
+        run: |
+          echo "======================================"
+          echo "TAILSCALE IP"
+          echo "======================================"
+
+          IP=$(tailscale ip -4)
+          echo "$IP"
+
+          echo "======================================"
+          echo "SSH COMMAND FOR TERMUX"
+          echo "======================================"
+
+          echo "ssh runner@$IP"
+
+          echo "======================================"
+
+      - name: Keep SSH Online
+        run: |
+          echo "SSH + Tailscale is running..."
+          echo "Waiting for the workflow to finish."
+
+          while true; do
+            sleep 60
+          done
