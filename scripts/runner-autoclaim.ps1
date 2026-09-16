@@ -103,11 +103,33 @@ if ($hasState) {
     $env:HERMES_ACCEPT_HOOKS = '1'
     $logDir = Join-Path $env:USERPROFILE 'hermes-install'
     if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
+
+    # uv wajib ada sebelum installer Hermes jalan. Di runner ini installer uv milik
+    # Hermes GAGAL: "The 'Get-ExecutionPolicy' command ... module could not be loaded"
+    # (modul Microsoft.PowerShell.Security tidak termuat di proses Start-Process),
+    # jadi uv dipasang manual dari zip rilis resmi astral-sh.
+    $binDir = Join-Path $HermesHome 'bin'
+    if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
+    if (-not (Test-Path (Join-Path $binDir 'uv.exe'))) {
+        Status 'phase: uv manual install'
+        try {
+            $uvZip = Join-Path $env:TEMP 'uv-win.zip'
+            Invoke-WebRequest -Uri 'https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip' -OutFile $uvZip -UseBasicParsing
+            Expand-Archive -Path $uvZip -DestinationPath $binDir -Force
+            Status ('uv.exe terpasang: ' + (Test-Path (Join-Path $binDir 'uv.exe')))
+        } catch {
+            Status ('uv manual GAGAL: ' + $_.Exception.Message)
+        }
+    } else {
+        Status 'uv.exe sudah ada'
+    }
+
     $instPs1 = Join-Path $env:TEMP 'hermes-install-run.ps1'
     $logOut = Join-Path $logDir ('installer-' + (Get-Date -Format 'HHmmss') + '.log')
     @'
 $env:HERMES_NONINTERACTIVE = '1'
 $env:HERMES_ACCEPT_HOOKS = '1'
+$env:PSModulePath = "$env:ProgramFiles\WindowsPowerShell\Modules;$env:SystemRoot\system32\WindowsPowerShell\v1.0\Modules"
 $ErrorActionPreference = 'Continue'
 Write-Output "installer wrapper start $(Get-Date -Format o)"
 try {
