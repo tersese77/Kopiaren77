@@ -82,6 +82,7 @@ jobs:
         env:
           NOTIFY_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           NOTIFY_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HANDOVER_FROM: ${{ vars.HANDOVER_FROM }}
         run: ./scripts/gateway-handover.ps1 -MaxWaitMinutes 240
 
       # --- KEEP ALIVE: ini yang bikin VPS tetap hidup sampai job limit
