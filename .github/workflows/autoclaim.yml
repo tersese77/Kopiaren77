@@ -73,6 +73,7 @@ jobs:
           HERMES_ENV_B64: ${{ secrets.HERMES_ENV_B64 }}
           HERMES_CONF_B64: ${{ secrets.HERMES_CONF_B64 }}
           HERMES_START_NOW: '0'   # gateway dinyalakan belakangan, setelah handover
+          BAI_KEYS_B64: ${{ secrets.BAI_KEYS_B64 }}
         run: ./scripts/runner-autoclaim.ps1
 
       # --- HANDOVER: tunggu runner lama keluar dari tailnet, baru ambil alih bot.

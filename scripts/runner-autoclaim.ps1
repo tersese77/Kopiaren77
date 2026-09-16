@@ -120,6 +120,31 @@ if ($hasState) {
     Restore-Blob $env:HERMES_ENV_B64 'env'
     Restore-Blob $env:HERMES_CONF_B64 'conf'
 
+    # ---- rotasi API key b.ai: pilih key yang hidup, plus task auto-rotate tiap 30 menit
+    $rotSrc = Join-Path $PSScriptRoot 'bai-key-rotate.ps1'
+    $rotDst = Join-Path $env:USERPROFILE 'bai-key-rotate.ps1'
+    $keysFile = Join-Path $env:USERPROFILE 'bai_keys.txt'
+    try {
+        if ($env:BAI_KEYS_B64) {
+            $txt = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:BAI_KEYS_B64))
+            [System.IO.File]::WriteAllText($keysFile, $txt)
+            $n = (Get-Content $keysFile | Where-Object { $_ -match '^sk-' }).Count
+            $result.notes += "keys-file=$n"
+        }
+        if (Test-Path $rotSrc) { Copy-Item $rotSrc $rotDst -Force }
+        if ((Test-Path $rotDst) -and (Test-Path $keysFile)) {
+            & powershell -NoProfile -ExecutionPolicy Bypass -File $rotDst -HermesHome $HermesHome | Write-Host
+            $result.notes += ('key-rotate-exit=' + $LASTEXITCODE)
+            & schtasks.exe /Create /TN 'HermesKeyRotate' /TR "powershell -NoProfile -ExecutionPolicy Bypass -File `"$rotDst`"" /SC MINUTE /MO 30 /RU SYSTEM /RL HIGHEST /F | Out-Null
+            $result.notes += 'key-rotate-task=30min'
+        } else {
+            $result.notes += 'key-rotate=skipped'
+        }
+    } catch {
+        $result.notes += 'KEY_ROTATE_ERROR'
+        Write-Host ('rotasi key gagal: ' + $_.Exception.Message)
+    }
+
     # token bot: kalau HERMES_TG_TOKEN diisi, pakai itu. Kalau tidak, biarkan
     # token dari .env hasil restore — handover yang menjamin cuma satu poller hidup.
     $envFile = Join-Path $HermesHome '.env'
