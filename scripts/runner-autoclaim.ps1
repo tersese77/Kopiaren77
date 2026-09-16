@@ -145,7 +145,7 @@ Write-Output "installer wrapper done $(Get-Date -Format o)"
     try {
         $p = Start-Process powershell -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $instPs1) `
             -PassThru -WindowStyle Hidden -RedirectStandardOutput $logOut -RedirectStandardError ($logOut + '.err')
-        $done = $p.WaitForExit(900000)   # 15 menit cap
+        $done = $p.WaitForExit(1200000)   # 20 menit cap (npm/browser tools paling lama di sini)
         if (-not $done) {
             try { $p.Kill() } catch { }
             $result.notes += 'installer-timeout-15m'
@@ -158,7 +158,13 @@ Write-Output "installer wrapper done $(Get-Date -Format o)"
         $result.notes += 'HERMES_INSTALL_FAILED'
         Status ('phase: install-hermes GAGAL: ' + $_.Exception.Message)
     }
-    Status ('hermes.exe ada: ' + (Test-Path (Join-Path $HermesHome 'bin\hermes.exe')))
+    # biner hermes: bin\hermes.exe (shim instalasi) atau venv\Scripts\hermes.exe
+    # (console script asli). Kalau instalasi kehabisan waktu di tahap npm/browser,
+    # shim bin\ mungkin belum dibuat — venv-nya tetap bisa dipakai.
+    $exeBin = Join-Path $HermesHome 'bin\hermes.exe'
+    $exeVenv = Join-Path $HermesHome 'hermes-agent\venv\Scripts\hermes.exe'
+    $hermesExe = if (Test-Path $exeBin) { $exeBin } elseif (Test-Path $exeVenv) { $exeVenv } else { $exeBin }
+    Status ('hermes.exe bin=' + (Test-Path $exeBin) + ' venv=' + (Test-Path $exeVenv) + ' -> pakai ' + $hermesExe)
 
     if (-not (Test-Path $HermesHome)) { New-Item -ItemType Directory -Path $HermesHome -Force | Out-Null }
 
@@ -227,7 +233,7 @@ Write-Output "installer wrapper done $(Get-Date -Format o)"
 set HERMES_HOME=$HermesHome
 if not exist "%HERMES_HOME%\logs" mkdir "%HERMES_HOME%\logs"
 cd /d "%HERMES_HOME%"
-"%HERMES_HOME%\bin\hermes.exe" gateway run --accept-hooks >> "%HERMES_HOME%\logs\gateway-task.log" 2>&1
+"$hermesExe" gateway run --accept-hooks >> "%HERMES_HOME%\logs\gateway-task.log" 2>&1
 "@ | Set-Content -Path $cmd -Encoding ASCII
 
     foreach ($f in @('gateway.pid', 'gateway.lock', 'gateway.sock')) {
