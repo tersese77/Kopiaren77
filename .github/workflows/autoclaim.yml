@@ -45,6 +45,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # --- DEBUG LIVE: server status di port 8080, bisa dibaca dari tailnet
+      #     curl http://<tailnet-ip-runner>:8080/        (status fase)
+      #     curl http://<tailnet-ip-runner>:8080/log      (tail log installer)
+      - name: Start status server (live debug)
+        shell: pwsh
+        run: |
+          Copy-Item ".\scripts\status-server.ps1" "$env:USERPROFILE\status-server.ps1" -Force
+          Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:USERPROFILE\status-server.ps1" -WindowStyle Hidden
+          Start-Sleep -Seconds 3
+          "[$((Get-Date).ToUniversalTime().ToString('HH:mm:ss'))Z] status server start (runner $env:RUNNER_NAME)" | Out-File "$env:USERPROFILE\status.txt" -Encoding UTF8
+          Write-Host "status server jalan (port 8080)"
+
       # --- AUTO CREATE: antrikan run berikutnya SEBELUM kerja, biar nggak ada gap
       - name: Antrikan run berikutnya (self re-dispatch)
         if: always()
