@@ -1,0 +1,103 @@
+# AutoClaim — Windows RDP VPS yang bikin + klaim dirinya sendiri
+#
+# Alur: setiap run -> nyalakan RDP, bikin user random, join Tailscale,
+# (opsional) install Hermes + restore config + autostart gateway,
+# kirim kredensial ke Telegram, lalu loop jaga hidup sampai job limit 6 jam.
+# Setiap run langsung meng-antri run berikutnya (self re-dispatch), jadi
+# VPS baru otomatis "create" sebelum yang lama mati — nggak ada gap.
+#
+# Secrets yang dipakai:
+#   TS_AUTHKEY          (wajib)  Tailscale auth key
+#   TELEGRAM_BOT_TOKEN  (opsional) token bot untuk notifikasi
+#   TELEGRAM_CHAT_ID    (opsional) chat id tujuan notifikasi
+#   HERMES_TG_TOKEN     (opsional) token bot KHUSUS runner (beda dari bot lain!)
+#   HERMES_CONFIG_B64   (opsional) base64 dari hermes-config-sync.tar.gz
+#
+# Catatan kuota: job GitHub-hosted max 6 jam. Repo public = menit gratis,
+# tapi log-nya publik -> karena itu kredensial HANYA dikirim ke Telegram,
+# tidak pernah di-echo ke log workflow.
+
+name: AutoClaim - Windows RDP VPS
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 */5 * * *'   # jaring pengaman: kalau self-dispatch gagal
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: autoclaim-rdp
+  cancel-in-progress: false   # run berikutnya nunggu di antrean, bukan saling bunuh
+
+jobs:
+  rdp:
+    runs-on: windows-2025
+    timeout-minutes: 355        # di bawah limit keras 360 menit
+    env:
+      RDP_USER: clouduser
+      TS_HOSTNAME: github-windows-rdp
+      HERMES_HOME: C:\Users\clouduser\AppData\Local\hermes
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # --- AUTO CREATE: antrikan run berikutnya SEBELUM kerja, biar nggak ada gap
+      - name: Antrikan run berikutnya (self re-dispatch)
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          try {
+            $h = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json' }
+            $u = "https://api.github.com/repos/${{ github.repository }}/actions/workflows/autoclaim.yml/dispatches"
+            Invoke-RestMethod -Method Post -Uri $u -Headers $h -ContentType 'application/json' -Body '{"ref":"${{ github.ref_name }}"}'
+            Write-Host "run berikutnya sudah diantrikan"
+          } catch {
+            Write-Host "gagal antrikan run berikutnya (cron yang jadi backup): $($_.Exception.Message)"
+          }
+
+      # --- AUTO CREATE + AUTO CLAIM: seluruh bootstrap dalam satu script
+      - name: Bootstrap VPS (RDP + Tailscale + Hermes) & kirim kredensial
+        shell: pwsh
+        env:
+          RDP_USER: clouduser
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+          NOTIFY_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          NOTIFY_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HERMES_TG_TOKEN: ${{ secrets.HERMES_TG_TOKEN }}
+          HERMES_ENV_B64: ${{ secrets.HERMES_ENV_B64 }}
+          HERMES_CONF_B64: ${{ secrets.HERMES_CONF_B64 }}
+          HERMES_START_NOW: '0'   # gateway dinyalakan belakangan, setelah handover
+        run: ./scripts/runner-autoclaim.ps1
+
+      # --- HANDOVER: tunggu runner lama keluar dari tailnet, baru ambil alih bot.
+      # Ini yang mencegah 409 getUpdates saat dua runner memakai bot token yang sama.
+      - name: Ambil alih gateway (tunggu runner lama mati)
+        shell: pwsh
+        env:
+          NOTIFY_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          NOTIFY_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: ./scripts/gateway-handover.ps1 -MaxWaitMinutes 240
+
+      # --- KEEP ALIVE: ini yang bikin VPS tetap hidup sampai job limit
+      - name: Keep RDP + Tailscale alive
+        shell: pwsh
+        run: |
+          Write-Host "================ RDP IS RUNNING ================"
+          Write-Host "Jangan cancel workflow ini selama memakai RDP."
+          Write-Host "==============================================="
+          while ($true) {
+            $svc = Get-Service -Name TermService
+            if ($svc.Status -ne 'Running') { Start-Service -Name TermService }
+            $ts = "$env:ProgramFiles\Tailscale\tailscale.exe"
+            if (Test-Path $ts) {
+              $ip = (& $ts ip -4) -join ''
+              Write-Host "[$(Get-Date -Format s)] RDP $ip:3389 | TermService=$((Get-Service TermService).Status)"
+            }
+            Start-Sleep -Seconds 60
+          }
