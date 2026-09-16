@@ -45,6 +45,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # --- CACHE: install Hermes itu ~15 menit, hampir semuanya di tahap npm/browser tools.
+      #     Dengan cache ini, runner berikutnya cukup restore (~1 menit) bukan install ulang.
+      #     Naikkan angka versi di key kalau cache pernah menyimpan install yang rusak.
+      - name: Restore cache install Hermes
+        id: hermes_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\Users\clouduser\AppData\Local\hermes\hermes-agent
+          key: hermes-agent-win-v2
+
       # --- DEBUG LIVE: server status di port 8080, bisa dibaca dari tailnet
       #     curl http://<tailnet-ip-runner>:8080/        (status fase)
       #     curl http://<tailnet-ip-runner>:8080/log      (tail log installer)
@@ -87,6 +97,14 @@ jobs:
           HERMES_START_NOW: '0'   # gateway dinyalakan belakangan, setelah handover
           BAI_KEYS_B64: ${{ secrets.BAI_KEYS_B64 }}
         run: ./scripts/runner-autoclaim.ps1
+
+      # --- simpan cache install supaya runner berikutnya nggak install ulang 15 menit
+      - name: Simpan cache install Hermes
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: C:\Users\clouduser\AppData\Local\hermes\hermes-agent
+          key: hermes-agent-win-v2
 
       # --- HANDOVER: tunggu runner lama keluar dari tailnet, baru ambil alih bot.
       # Ini yang mencegah 409 getUpdates saat dua runner memakai bot token yang sama.
