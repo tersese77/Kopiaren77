@@ -24,6 +24,7 @@ param(
     [int]$PollSeconds = 120,
     [int]$ProbeTimeoutSec = 25,
     [int]$RequiredCleanProbes = 3,
+    [int]$GraceSeconds = 180,
     [switch]$ProbeOnly
 )
 
@@ -139,7 +140,20 @@ while ((Get-Date) -lt $deadline) {
     $clean++
     Write-Host ("[" + (Get-Date -Format HH:mm:ss) + "] probe bersih " + $clean + "/" + $RequiredCleanProbes)
     if ($clean -ge $RequiredCleanProbes) {
-        Write-Host 'tidak ada poller lain setelah beberapa probe -> ambil alih sekarang'
+        # GRACE: catatan lapangan — probe getUpdates TIDAK bisa diandalkan sebagai bukti
+        # "tidak ada poller" (12 probe berturut-turut balas 200 padahal gateway lain
+        # sedang aktif polling). Karena itu sinyal utama tetap: node pendahulu sudah
+        # hilang dari tailnet. Grace ini menutup kasus sisa (mis. node hilang karena
+        # tailscale restart sementara VM-nya masih hidup).
+        Write-Host ("probe bersih, tunggu grace " + $GraceSeconds + "s sebelum ambil alih")
+        Start-Sleep -Seconds $GraceSeconds
+        $recheck = Test-PredecessorOnline
+        if ($recheck) {
+            Write-Host 'pendahulu muncul lagi setelah grace -> batal ambil alih, lanjut tunggu'
+            $clean = 0
+            continue
+        }
+        Write-Host 'ambil alih gateway sekarang'
         Start-Gateway
         exit 0
     }
