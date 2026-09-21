@@ -182,9 +182,14 @@ Write-Output "installer wrapper done $(Get-Date -Format o)"
             $script:result.notes += "RESTORE_FAILED-$tag"
         }
     }
-    Restore-Blob $env:HERMES_CONFIG_B64 'full'
-    Restore-Blob $env:HERMES_ENV_B64 'env'
-    Restore-Blob $env:HERMES_CONF_B64 'conf'
+    if (Test-Path (Join-Path $HermesHome '.restored-from-artifact')) {
+        Write-Host 'state sudah dipulihkan dari artifact TERBARU -> lewati restore B64 (hindari clobber state segar)'
+        $script:result.notes += 'skip-b64-restore'
+    } else {
+        Restore-Blob $env:HERMES_CONFIG_B64 'full'
+        Restore-Blob $env:HERMES_ENV_B64 'env'
+        Restore-Blob $env:HERMES_CONF_B64 'conf'
+    }
 
     # ---- rotasi API key b.ai: pilih key yang hidup, plus task auto-rotate tiap 30 menit
     Status 'phase: bai-key-rotate'

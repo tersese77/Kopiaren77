@@ -77,6 +77,8 @@ try {
     if (-not (Test-Path $src)) { throw ' struktur backup tidak berisi hermes-state/' }
     if (-not (Test-Path $HermesHome)) { New-Item -ItemType Directory -Path $HermesHome -Force | Out-Null }
     Copy-Item (Join-Path $src '*') $HermesHome -Recurse -Force
+    # marker: memberi tahu bootstrap agar TIDAK menimpa .env/config.yaml dengan B64 stale
+    Set-Content -Path (Join-Path $HermesHome '.restored-from-artifact') -Value (Get-Date -Format o) -Encoding UTF8
     $names = (Get-ChildItem $src | Select-Object -ExpandProperty Name) -join ', '
     Status ("restore OK: " + $names)
     exit 0
