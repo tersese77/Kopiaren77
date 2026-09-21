@@ -56,6 +56,18 @@ try {
         $local = Join-Path $env:TEMP 'hermes-state.tar.gz.enc'
         if (Test-Path $local) { $enc = $local; Status "backup lokal ditemukan: $enc" }
     }
+    # 3b. Cold-fallback: seed terenkripsi yang di-commit di repo (fresh saat run pertama)
+    if (-not $enc) {
+        $seed = Join-Path $PSScriptRoot '..\seed\hermes-state.tar.gz.enc'
+        if (Test-Path $seed) {
+            Status 'artifact tidak ada -> pakai SEED backup dari repo'
+            & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'restore-seed.ps1') -SeedPath $seed | Write-Host
+            if (Test-Path (Join-Path $HermesHome '.restored-from-artifact')) {
+                Status 'seed restore sukses -> selesai'
+                exit 0
+            }
+        }
+    }
     if (-not $enc) { Status 'TIDAK ADA backup -> lanjut bootstrap tanpa restore'; exit 0 }
 
     # 4. Dekripsi AES-256-CBC + PBKDF2
