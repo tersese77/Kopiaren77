@@ -51,7 +51,16 @@ try {
             } else { Status 'tidak ada artifact backup di repo ini (run pertama?)' }
         } catch { Status ("resolve artifact gagal: " + $_.Exception.Message) }
     }
-    # 3. Backup lokal di host yang sama (fallback terakhir)
+    # 3. Seed dari repo (commit terenkripsi, fallback kalau artifact belum pernah ada)
+    if (-not $enc) {
+        try {
+            $seedUrl = 'https://raw.githubusercontent.com/tersese77/Kopiaren77/main/.github/seed/hermes-state.tar.gz.enc'
+            $seedFile = Join-Path $env:TEMP 'hermes-seed.tar.gz.enc'
+            Invoke-WebRequest -Uri $seedUrl -OutFile $seedFile -UseBasicParsing -TimeoutSec 180
+            if ((Get-Item $seedFile).Length -gt 100KB) { $enc = $seedFile; Status 'backup via seed repo' }
+        } catch { Status ("seed repo tidak tersedia: " + $_.Exception.Message) }
+    }
+    # 4. Backup lokal di host yang sama (fallback terakhir)
     if (-not $enc) {
         $local = Join-Path $env:TEMP 'hermes-state.tar.gz.enc'
         if (Test-Path $local) { $enc = $local; Status "backup lokal ditemukan: $enc" }
